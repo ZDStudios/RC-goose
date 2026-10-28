@@ -82,7 +82,7 @@ pub use sound::{HonkTone, Sound};
 pub use task::{
     AnnoyedReactionTask, AutumnLeafPileTask, CollectWindowTask, EdgeEntryTask, EdgeWrapTask,
     FirstUxTask, GracefulExitTask, HyperTask, NabMouseTask, PerchRideTask, PermissionWaitTask,
-    Task, WanderTask,
+    Task, WalkToTask, WanderTask,
 };
 pub use time::{Accumulator, Clock, DT, FRAMERATE};
 pub use world::World;

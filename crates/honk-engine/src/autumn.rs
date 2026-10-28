@@ -17,6 +17,8 @@ pub const LEAVES_PER_PILE: usize = 128;
 pub const SPAWN_ANIM_LENGTH: f32 = 1.0;
 pub const LIFETIME_AFTER_KICKED: f32 = 10.0;
 pub const PILE_LIFETIME: f64 = 30.0;
+/// Piles placed through remote control are toys, so they last longer than seasonal piles.
+pub const PLACED_PILE_LIFETIME: f64 = 120.0;
 const PILE_FADE_SECONDS: f64 = 4.0;
 pub const GRAVITY: f32 = -900.0;
 pub const MAX_VEL_XY: f32 = 200.0;
@@ -68,6 +70,10 @@ pub struct AutumnPile {
     pub created_at: f64,
     pub kicked_at: Option<f64>,
     pub leaves: Vec<AutumnLeaf>,
+    /// Placed on request (remote control) rather than spawned by the Autumn season. Placed piles
+    /// survive while the season is off, and only they can be moved.
+    pub placed: bool,
+    lifetime: f64,
 }
 
 impl AutumnPile {
@@ -107,6 +113,8 @@ impl AutumnPile {
             created_at: now,
             kicked_at: None,
             leaves,
+            placed: false,
+            lifetime: PILE_LIFETIME,
         }
     }
 
@@ -159,7 +167,7 @@ impl AutumnPile {
 
     pub fn fade_out(&self, now: f64) -> f32 {
         let age_fade =
-            (now - self.created_at - (PILE_LIFETIME - PILE_FADE_SECONDS)) / PILE_FADE_SECONDS;
+            (now - self.created_at - (self.lifetime - PILE_FADE_SECONDS)) / PILE_FADE_SECONDS;
         let kick_fade = self.kicked_at.map_or(0.0, |at| {
             (now - at - (LIFETIME_AFTER_KICKED as f64 - 2.0)) / 2.0
         });
@@ -209,8 +217,60 @@ impl AutumnState {
         self.piles.iter().any(|pile| pile.kicked_at.is_none())
     }
 
+    pub fn has_placed_piles(&self) -> bool {
+        self.piles.iter().any(|pile| pile.placed)
+    }
+
+    /// Place a requested pile at `position` (already clamped by the caller). Returns `None` when
+    /// the bounded pile capacity is full.
+    pub fn place_pile(
+        &mut self,
+        now: f64,
+        position: Vec2,
+        rng: &mut SplitMix64,
+    ) -> Option<AutumnPileId> {
+        if self.piles.len() >= MAX_LEAF_PILES {
+            return None;
+        }
+        let id = AutumnPileId(self.next_id);
+        self.next_id += 1;
+        let mut pile = AutumnPile::new(
+            id,
+            position,
+            rng.range(30.0, 50.0),
+            rng.range(30.0, 50.0),
+            now,
+            rng,
+        );
+        pile.placed = true;
+        pile.lifetime = PLACED_PILE_LIFETIME;
+        self.piles.push(pile);
+        Some(id)
+    }
+
+    /// Move an unkicked placed pile. Returns `false` when it is gone, kicked, or seasonal.
+    pub fn move_pile(&mut self, id: AutumnPileId, position: Vec2) -> bool {
+        match self
+            .piles
+            .iter_mut()
+            .find(|pile| pile.id == id && pile.placed && pile.kicked_at.is_none())
+        {
+            Some(pile) => {
+                pile.position = position;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn clear(&mut self) {
         self.piles.clear();
+        self.next_pile_at = None;
+    }
+
+    /// Drop seasonal piles and the season's spawn timer, keeping requested (placed) piles.
+    pub fn clear_seasonal(&mut self) {
+        self.piles.retain(|pile| pile.placed);
         self.next_pile_at = None;
     }
 
@@ -222,14 +282,23 @@ impl AutumnState {
         goose: &GooseEntity,
         rng: &mut SplitMix64,
     ) {
-        self.tick_layout(now, active, &DesktopLayout::single(bounds), goose, rng);
+        self.tick_layout(
+            now,
+            active,
+            active,
+            &DesktopLayout::single(bounds),
+            goose,
+            rng,
+        );
     }
 
-    /// Region-aware tick used by [`crate::world::World`].
+    /// Region-aware tick used by [`crate::world::World`]. `active` keeps piles alive at all;
+    /// `seasonal` additionally spawns Autumn piles. Without the season only placed piles remain.
     pub fn tick_layout(
         &mut self,
         now: f64,
         active: bool,
+        seasonal: bool,
         layout: &DesktopLayout,
         goose: &GooseEntity,
         rng: &mut SplitMix64,
@@ -238,14 +307,19 @@ impl AutumnState {
             self.clear();
             return;
         }
-        let next = *self
-            .next_pile_at
-            .get_or_insert(now + FIRST_PILE_SECONDS as f64);
-        if now >= next {
-            self.next_pile_at = Some(now + rng.range(PILE_INTERVAL_MIN, PILE_INTERVAL_MAX) as f64);
-            if self.piles.len() < MAX_LEAF_PILES {
-                self.spawn_pile(now, layout, rng);
+        if seasonal {
+            let next = *self
+                .next_pile_at
+                .get_or_insert(now + FIRST_PILE_SECONDS as f64);
+            if now >= next {
+                self.next_pile_at =
+                    Some(now + rng.range(PILE_INTERVAL_MIN, PILE_INTERVAL_MAX) as f64);
+                if self.piles.len() < MAX_LEAF_PILES {
+                    self.spawn_pile(now, layout, rng);
+                }
             }
+        } else {
+            self.clear_seasonal();
         }
 
         let walk = goose.parameters.walk_speed;

@@ -448,6 +448,15 @@ pub fn run(
                     println!("honk300: do {action:?} -> {outcome:?}");
                     request.respond(outcome.into());
                 }
+                ControlCommand::RemoteDo(_)
+                | ControlCommand::WalkTo(..)
+                | ControlCommand::LeafPlace(..)
+                | ControlCommand::LeafMove(..)
+                | ControlCommand::Snapshot
+                | ControlCommand::Leaves => {
+                    let response = RuntimeCore::remote_response(&mut world, request.command());
+                    request.respond(response);
+                }
                 ControlCommand::Status => {
                     let fullscreen = honk_control::combine_capabilities([
                         kwin.status().fullscreen,

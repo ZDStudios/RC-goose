@@ -192,7 +192,10 @@ fn handle_command(
                                 ControlResponse::Status(_)
                                 | ControlResponse::Session(_)
                                 | ControlResponse::Wayland(_)
-                                | ControlResponse::Presence(_),
+                                | ControlResponse::Presence(_)
+                                | ControlResponse::Leaf(_)
+                                | ControlResponse::Snapshot(_)
+                                | ControlResponse::Leaves(_),
                             ) => result("saved; unexpected status response", true, true),
                             Err(error)
                                 if matches!(
@@ -236,7 +239,10 @@ fn handle_command(
                 ControlResponse::Status(_)
                 | ControlResponse::Session(_)
                 | ControlResponse::Wayland(_)
-                | ControlResponse::Presence(_),
+                | ControlResponse::Presence(_)
+                | ControlResponse::Leaf(_)
+                | ControlResponse::Snapshot(_)
+                | ControlResponse::Leaves(_),
             ) => result("reload got unexpected status", true, false),
             Err(err) => result(format!("reload failed: {err}"), true, false),
         },
@@ -268,7 +274,10 @@ fn handle_command(
             Ok(
                 ControlResponse::Session(_)
                 | ControlResponse::Wayland(_)
-                | ControlResponse::Presence(_),
+                | ControlResponse::Presence(_)
+                | ControlResponse::Leaf(_)
+                | ControlResponse::Snapshot(_)
+                | ControlResponse::Leaves(_),
             ) => result("status got unexpected session detail", true, false),
             Ok(ControlResponse::Ok) => result("status got unexpected ok", true, false),
             Ok(ControlResponse::Err(code)) => {
@@ -296,7 +305,10 @@ fn handle_command(
                 ControlResponse::Status(_)
                 | ControlResponse::Session(_)
                 | ControlResponse::Wayland(_)
-                | ControlResponse::Presence(_),
+                | ControlResponse::Presence(_)
+                | ControlResponse::Leaf(_)
+                | ControlResponse::Snapshot(_)
+                | ControlResponse::Leaves(_),
             ) => result("stop got unexpected status", true, false),
             Err(err) => result(format!("stop failed: {err}"), true, false),
         },
@@ -307,7 +319,10 @@ fn handle_command(
                 ControlResponse::Status(_)
                 | ControlResponse::Session(_)
                 | ControlResponse::Wayland(_)
-                | ControlResponse::Presence(_),
+                | ControlResponse::Presence(_)
+                | ControlResponse::Leaf(_)
+                | ControlResponse::Snapshot(_)
+                | ControlResponse::Leaves(_),
             ) => result("poke got unexpected status", true, false),
             Err(err) => result(format!("poke failed: {err}"), true, false),
         },
@@ -396,7 +411,10 @@ where
             Ok(
                 ControlResponse::Session(_)
                 | ControlResponse::Wayland(_)
-                | ControlResponse::Presence(_),
+                | ControlResponse::Presence(_)
+                | ControlResponse::Leaf(_)
+                | ControlResponse::Snapshot(_)
+                | ControlResponse::Leaves(_),
             ) => "status returned unexpected session detail".into(),
             Err(err) => {
                 let message = err.to_string();

@@ -292,6 +292,13 @@ User notes and PNG memes can be added without modifying the program:
 - macOS: `~/Library/Application Support/honk300/media/Notes` and `.../Memes`
 - Linux: `${XDG_DATA_HOME:-~/.local/share}/honk300/media/Notes` and `.../Memes`
 
+### Remote control (opt-in, Windows)
+
+A goose can be controlled from another computer through a relay you host yourself, for example
+on Coolify. It is off by default, and the goose only makes an outbound connection. While it is
+connected, the tray shows it and offers *Disconnect remote control*. Setup, the control panel
+and the protocol are described in [docs/remote-control.md](docs/remote-control.md).
+
 ## Remove or update
 
 On every platform, all three command names share the provenance-preserving update command.

@@ -231,7 +231,10 @@ fn stop_runtime_for_lifecycle_with(
             ControlResponse::Status(_)
             | ControlResponse::Session(_)
             | ControlResponse::Wayland(_)
-            | ControlResponse::Presence(_),
+            | ControlResponse::Presence(_)
+            | ControlResponse::Leaf(_)
+            | ControlResponse::Snapshot(_)
+            | ControlResponse::Leaves(_),
         ) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "runtime returned status to lifecycle stop request",

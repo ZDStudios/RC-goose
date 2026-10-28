@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Goose Remote</title>
+<style>
+  :root {
+    --bg: #f6f3ec; --panel: #ffffff; --ink: #1f1d1a; --muted: #6b665d; --line: #ddd6c8;
+    --accent: #e07b1a; --accent-ink: #ffffff; --ok: #2f8a4c; --warn: #b5541c; --map: #e9e3d6;
+    --goose: #ffffff; --goose-edge: #1f1d1a; --leaf: #c8641e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614; --panel: #22201d; --ink: #f1ede5; --muted: #a39d92; --line: #3a3631;
+      --accent: #f0943a; --accent-ink: #1b1209; --ok: #5cc27d; --warn: #f08a4b; --map: #2c2925;
+      --goose: #fbfaf7; --goose-edge: #f0943a; --leaf: #e98a3d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input[type=password], input[type=text] { flex: 1 1 220px; min-width: 0; padding: 9px 11px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; }
+  button { font: inherit; padding: 9px 14px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--ink); cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.danger { border-color: var(--warn); color: var(--warn); }
+  button[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .geese { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+  .goose { text-align: left; padding: 10px 12px; }
+  .goose[aria-pressed=true] { background: var(--panel); color: var(--ink); outline: 2px solid var(--accent); }
+  .goose strong { display: block; }
+  .goose span { color: var(--muted); font-size: 13px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; }
+  .dot.quiet { background: var(--warn); }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  @media (min-width: 760px) { .grid { grid-template-columns: 260px 1fr; } }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .actions button { width: 100%; }
+  canvas { width: 100%; display: block; background: var(--map); border-radius: 8px; border: 1px solid var(--line); touch-action: none; cursor: crosshair; }
+  .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  .status { color: var(--muted); font-size: 13px; }
+  #log { list-style: none; margin: 0; padding: 0; max-height: 180px; overflow: auto; font: 13px/1.5 ui-monospace, Consolas, monospace; }
+  #log li.err { color: var(--warn); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Goose Remote</h1>
+  <p class="sub">Control the geese connected to this relay.</p>
+
+  <section class="card" id="login">
+    <h2>Sign in</h2>
+    <form class="row" id="login-form">
+      <input type="password" id="token" autocomplete="current-password" placeholder="Relay token" aria-label="Relay token" required>
+      <label class="row status"><input type="checkbox" id="remember"> Remember on this device</label>
+      <button class="primary" type="submit">Connect</button>
+    </form>
+    <p class="hint" id="login-error"></p>
+  </section>
+
+  <div id="app" class="hidden">
+    <section class="card">
+      <div class="row" style="justify-content: space-between">
+        <h2 style="margin:0">Geese</h2>
+        <span class="status" id="conn">Connecting…</span>
+        <button type="button" id="signout">Sign out</button>
+      </div>
+      <div class="geese" id="geese" style="margin-top:12px"></div>
+      <p class="hint" id="no-geese">No geese are online. Enable <code>[remote]</code> in a goose's config.toml.</p>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Actions</h2>
+        <div class="actions">
+          <button data-cmd="honk">Honk</button>
+          <button data-cmd="mud">Muddy feet</button>
+          <button data-cmd="meme">Drop a meme</button>
+          <button data-cmd="note">Drop a note</button>
+          <button data-cmd="chase_cursor">Chase cursor</button>
+          <button data-cmd="wander">Calm down</button>
+        </div>
+        <div style="margin-top:8px"><button class="danger" data-cmd="walk_off" style="width:100%">Walk off (quit)</button></div>
+        <p class="hint" id="selected-status">Pick a goose first.</p>
+      </section>
+
+      <section class="card">
+        <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+          <h2 style="margin:0">Screen</h2>
+          <div class="row" role="group" aria-label="Map tool">
+            <button type="button" data-tool="walk" aria-pressed="true">Walk here</button>
+            <button type="button" data-tool="leaf" aria-pressed="false">Drop leaves</button>
+            <button type="button" data-tool="move" aria-pressed="false">Move leaves</button>
+          </div>
+        </div>
+        <canvas id="map" width="640" height="360" aria-label="Map of the goose's screen"></canvas>
+        <p class="hint" id="map-hint">Click to send the goose there.</p>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Activity</h2>
+      <ul id="log"></ul>
+    </section>
+  </div>
+</main>
+<script>
+"use strict";
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get() { try { return sessionStorage.getItem("goose-token") || localStorage.getItem("goose-token"); } catch { return null; } },
+    set(token, remember) {
+      try { sessionStorage.setItem("goose-token", token); if (remember) localStorage.setItem("goose-token", token); } catch {}
+    },
+    clear() { try { sessionStorage.removeItem("goose-token"); localStorage.removeItem("goose-token"); } catch {} },
+  };
+
+  let socket = null, token = null, retry = 0, retryTimer = null, nextId = 1;
+  let geese = [], selected = null, tool = "walk", drag = null;
+  const pendingLabels = new Map();
+
+  function log(text, error) {
+    const li = document.createElement("li");
+    li.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+    if (error) li.className = "err";
+    $("log").prepend(li);
+    while ($("log").children.length > 60) $("log").lastChild.remove();
+  }
+
+  function connect() {
+    clearTimeout(retryTimer);
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    socket = new WebSocket(`${scheme}//${location.host}/ws`);
+    $("conn").textContent = "Connecting…";
+    socket.onopen = () => socket.send(JSON.stringify({ type: "hello", role: "panel", v: 1, token }));
+    socket.onmessage = (event) => {
+      let m; try { m = JSON.parse(event.data); } catch { return; }
+      if (m.type === "welcome") { retry = 0; $("conn").textContent = "Connected"; showApp(true); }
+      else if (m.type === "error") {
+        if (m.error === "unauthorized") { store.clear(); token = null; showApp(false); $("login-error").textContent = "That token was not accepted."; }
+        else log(`relay error: ${m.error}`, true);
+      }
+      else if (m.type === "geese") { geese = m.geese; if (selected && !geese.some((g) => g.name === selected)) selected = null; if (!selected && geese.length === 1) selected = geese[0].name; render(); }
+      else if (m.type === "status") { const g = geese.find((g) => g.name === m.name); if (g) { g.status = m.status; render(); } }
+      else if (m.type === "result") {
+        const label = pendingLabels.get(m.id) || "command"; pendingLabels.delete(m.id);
+        if (m.ok) log(`${m.target}: ${label} ✓${m.leaf ? ` (leaves #${m.leaf})` : ""}`);
+        else log(`${m.target || "?"}: ${label} — ${explain(m.error)}`, true);
+      }
+    };
+    socket.onclose = () => {
+      if (!token) return;
+      $("conn").textContent = "Disconnected — retrying…";
+      retry = Math.min(retry + 1, 6);
+      retryTimer = setTimeout(connect, 500 * 2 ** retry);
+    };
+  }
+
+  function explain(error) {
+    return ({
+      BUSY: "the goose is busy right now", UNSUPPORTED: "that is turned off on this goose",
+      QUIET: "the goose is in quiet mode (fullscreen, do-not-disturb or quiet hours)",
+      GONE: "those leaves are gone", offline: "goose is offline", timeout: "no reply from the goose",
+      rate_limited: "slow down a little", NOT_RUNNING: "the goose is not running",
+    })[error] || error || "failed";
+  }
+
+  function send(cmd, extra = {}) {
+    if (!selected || !socket || socket.readyState !== WebSocket.OPEN) return;
+    const id = `p${nextId++}`;
+    pendingLabels.set(id, cmd.replace(/_/g, " "));
+    socket.send(JSON.stringify({ type: "command", id, target: selected, cmd, ...extra }));
+  }
+
+  function showApp(on) {
+    $("app").classList.toggle("hidden", !on);
+    $("login").classList.toggle("hidden", on);
+  }
+
+  // Cards are updated in place: status arrives twice a second, and replacing the buttons would
+  // swallow clicks that straddle a refresh.
+  const cards = new Map();
+  function render() {
+    const list = $("geese");
+    for (const [name, card] of cards) {
+      if (!geese.some((g) => g.name === name)) { card.button.remove(); cards.delete(name); }
+    }
+    for (const g of geese) {
+      let card = cards.get(g.name);
+      if (!card) {
+        const button = document.createElement("button");
+        button.type = "button"; button.className = "goose";
+        const name = document.createElement("strong");
+        const dot = document.createElement("i");
+        name.append(dot, g.name);
+        const meta = document.createElement("span");
+        button.append(name, meta);
+        button.onclick = () => { selected = g.name; render(); };
+        card = { button, dot, meta };
+        cards.set(g.name, card);
+      }
+      list.append(card.button);
+      const s = g.status;
+      card.button.setAttribute("aria-pressed", String(g.name === selected));
+      card.dot.className = `dot${s && s.quiet ? " quiet" : ""}`;
+      card.meta.textContent = s && s.online !== false
+        ? `${s.quiet ? "quiet · " : ""}${s.action.replace(/_/g, " ")} · ${s.screen.w}×${s.screen.h}`
+        : `${g.platform} · waiting for status`;
+    }
+    $("no-geese").classList.toggle("hidden", geese.length > 0);
+    const has = !!selected;
+    document.querySelectorAll("[data-cmd]").forEach((b) => { b.disabled = !has; });
+    const g = current();
+    $("selected-status").textContent = g ? `Controlling ${g.name}${g.status && g.status.quiet ? " (quiet mode: most actions are paused)" : ""}.` : "Pick a goose first.";
+    draw();
+  }
+
+  function current() { return geese.find((g) => g.name === selected) || null; }
+
+  // Map: desktop coordinates <-> canvas pixels.
+  const canvas = $("map"), ctx = canvas.getContext("2d");
+  function screenOf(g) {
+    const s = g && g.status && g.status.screen;
+    return s && s.w > 0 && s.h > 0 ? s : null;
+  }
+  function fitCanvas() {
+    const g = current(), s = screenOf(g);
+    const ratio = s ? s.h / s.w : 9 / 16;
+    const width = canvas.clientWidth || 640, dpr = window.devicePixelRatio || 1;
+    canvas.style.height = `${Math.round(width * Math.min(Math.max(ratio, 0.2), 1.2))}px`;
+    canvas.width = Math.round(width * dpr); canvas.height = Math.round(canvas.clientHeight * dpr);
+  }
+  function toCanvas(s, x, y) { return [((x - s.x) / s.w) * canvas.width, ((y - s.y) / s.h) * canvas.height]; }
+  function toDesktop(s, event) {
+    const r = canvas.getBoundingClientRect();
+    const fx = (event.clientX - r.left) / r.width, fy = (event.clientY - r.top) / r.height;
+    return [Math.round(s.x + fx * s.w), Math.round(s.y + fy * s.h)];
+  }
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+  function draw() {
+    fitCanvas();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const g = current(), s = screenOf(g);
+    const dpr = window.devicePixelRatio || 1;
+    if (!s) {
+      ctx.fillStyle = css("--muted"); ctx.font = `${14 * dpr}px system-ui`; ctx.textAlign = "center";
+      ctx.fillText(g ? "Waiting for screen size…" : "No goose selected", canvas.width / 2, canvas.height / 2);
+      return;
+    }
+    for (const leaf of g.status.leaves) {
+      const [x, y] = drag && drag.id === leaf.id ? drag.at : toCanvas(s, leaf.x, leaf.y);
+      ctx.fillStyle = css("--leaf");
+      for (let i = 0; i < 5; i++) {
+        ctx.beginPath();
+        ctx.arc(x + Math.cos(i * 1.3) * 6 * dpr, y + Math.sin(i * 1.3) * 4 * dpr, 4 * dpr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    if (g.status.x != null) {
+      const [x, y] = toCanvas(s, g.status.x, g.status.y);
+      ctx.fillStyle = css("--goose"); ctx.strokeStyle = css("--goose-edge"); ctx.lineWidth = 2 * dpr;
+      ctx.beginPath(); ctx.ellipse(x, y, 9 * dpr, 6 * dpr, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x + 7 * dpr, y - 8 * dpr, 4 * dpr, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+  }
+
+  function leafAt(s, g, event) {
+    const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    const px = (event.clientX - r.left) * (canvas.width / r.width), py = (event.clientY - r.top) * (canvas.height / r.height);
+    let best = null, bestD = 18 * dpr;
+    for (const leaf of g.status.leaves) {
+      const [x, y] = toCanvas(s, leaf.x, leaf.y); const d = Math.hypot(px - x, py - y);
+      if (d < bestD) { best = leaf; bestD = d; }
+    }
+    return best;
+  }
+
+  canvas.addEventListener("pointerdown", (event) => {
+    const g = current(), s = screenOf(g); if (!s) return;
+    if (tool === "move") {
+      const leaf = leafAt(s, g, event);
+      if (leaf) { drag = { id: leaf.id, at: toCanvas(s, leaf.x, leaf.y) }; canvas.setPointerCapture(event.pointerId); }
+      return;
+    }
+    const [x, y] = toDesktop(s, event);
+    send(tool === "leaf" ? "leaf_place" : "walk_to", { x, y });
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!drag) return;
+    const r = canvas.getBoundingClientRect();
+    drag.at = [(event.clientX - r.left) * (canvas.width / r.width), (event.clientY - r.top) * (canvas.height / r.height)];
+    draw();
+  });
+  canvas.addEventListener("pointerup", (event) => {
+    if (!drag) return;
+    const g = current(), s = screenOf(g), id = drag.id; drag = null;
+    if (s) { const [x, y] = toDesktop(s, event); send("leaf_move", { leaf: id, x, y }); }
+    draw();
+  });
+  window.addEventListener("resize", draw);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+
+  const hints = { walk: "Click to send the goose there.", leaf: "Click to drop a leaf pile for the goose to kick.", move: "Drag a leaf pile to move it." };
+  document.querySelectorAll("[data-tool]").forEach((b) => {
+    b.onclick = () => {
+      tool = b.dataset.tool;
+      document.querySelectorAll("[data-tool]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+      $("map-hint").textContent = hints[tool];
+    };
+  });
+  document.querySelectorAll("[data-cmd]").forEach((b) => {
+    b.onclick = () => {
+      if (b.dataset.cmd === "walk_off" && !confirm(`Send ${selected} home? The goose app will quit and can't be restarted from here.`)) return;
+      send(b.dataset.cmd);
+    };
+  });
+
+  $("login-form").onsubmit = (event) => {
+    event.preventDefault();
+    token = $("token").value.trim(); if (!token) return;
+    store.set(token, $("remember").checked); $("token").value = ""; $("login-error").textContent = "";
+    connect();
+  };
+  $("signout").onclick = () => { store.clear(); token = null; if (socket) socket.close(); showApp(false); };
+
+  token = store.get();
+  if (token) connect();
+  render();
+})();
+</script>
+</body>
+</html>

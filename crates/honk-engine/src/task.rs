@@ -267,6 +267,42 @@ impl Task for EdgeEntryTask {
     }
 }
 
+/// Seconds the goose lingers at a remotely requested spot before resuming its own plans.
+pub const WALK_TO_DWELL: f64 = 3.0;
+
+/// Walks to one requested desktop point (remote control), lingers briefly, then finishes so the
+/// ordinary deck resumes. The world clamps the target into a real monitor before installing it.
+pub struct WalkToTask {
+    target: Vec2,
+    arrived_at: Option<f64>,
+}
+
+impl WalkToTask {
+    pub fn new(target: Vec2) -> Self {
+        Self {
+            target,
+            arrived_at: None,
+        }
+    }
+}
+
+impl Task for WalkToTask {
+    fn id(&self) -> &'static str {
+        "walk_to"
+    }
+
+    fn run(&mut self, goose: &mut GooseEntity, ctx: &mut TaskCtx) -> bool {
+        goose.current_speed = goose.parameters.run_speed;
+        goose.current_acceleration = goose.parameters.acceleration_normal;
+        goose.target_pos = self.target;
+        if self.arrived_at.is_none() && arrived(goose, 6.0) {
+            self.arrived_at = Some(ctx.now);
+        }
+        self.arrived_at
+            .is_some_and(|at| ctx.now - at >= WALK_TO_DWELL)
+    }
+}
+
 impl GracefulExitTask {
     pub fn new() -> Self {
         Self::default()

@@ -3,6 +3,14 @@
 A plain-English account of what changed and why. The [technical changelog](CHANGELOG.md)
 has implementation details; [the README](README.md) describes current features and setup.
 
+## Remote control — upcoming
+
+### Added
+- Control your goose from another computer through a small server you host yourself. Turn it on in the settings file, then use a web page to make the goose honk, track mud, drop a meme or note, chase the cursor, walk to a spot on the screen, or play in leaf piles that you place and move around. It is off unless you turn it on.
+
+### Security
+- While remote control is connected, the tray icon says so, its menu shows where it is connected, and one click disconnects it. Quiet hours, do-not-disturb and fullscreen apps still pause the goose's mischief, terminal windows stay protected, and the web page can never force-quit or reconfigure the goose.
+
 ## Opening settings reliably — October 2026
 
 ### Fixed

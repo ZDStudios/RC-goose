@@ -475,7 +475,9 @@ mod tests {
         let serialized = serde_json::to_value(&config).unwrap();
         let mut keys = std::collections::BTreeSet::new();
         for (section, value) in serialized.as_object().unwrap() {
-            if section == "goose_config_version" {
+            // Remote control (ADR 0059) is configured in config.toml until the native window
+            // gains a secret-aware field; Rust saves still preserve the section.
+            if section == "goose_config_version" || section == "remote" {
                 continue;
             }
             for name in value.as_object().unwrap().keys() {
@@ -506,6 +508,24 @@ mod tests {
         assert!(apply_patch(
             &config,
             BTreeMap::from([("speeds.walk_speed".into(), json!(-1))])
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn settings_edits_preserve_remote_control_and_cannot_patch_it() {
+        let mut config = Config::default();
+        config.remote.enabled = true;
+        config.remote.token = "0123456789abcdef".into();
+        let edited = apply_patch(
+            &config,
+            BTreeMap::from([("audio.enabled".into(), json!(false))]),
+        )
+        .unwrap();
+        assert_eq!(edited.remote, config.remote);
+        assert!(apply_patch(
+            &config,
+            BTreeMap::from([("remote.enabled".into(), json!(false))])
         )
         .is_err());
     }

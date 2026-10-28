@@ -19,6 +19,15 @@
 ## To-Do
 
 ## Active
+- [ ] **Add opt-in remote control through a self-hosted relay** - Windows client, relay and panel per ADR 0059; preserve manners, terminal protection and existing CLI/IPC (owner claude) #g17
+  - [x] Record ADR 0059 and the relay/IPC protocol in `docs/remote-control.md`.
+  - [x] Build the relay, panel and Dockerfile with relay tests.
+  - [x] Add engine walk-to, placed leaf piles and the remote manners gate with tests.
+  - [x] Extend local IPC with remote frames and frame-limit tests.
+  - [x] Add the `[remote]` config section, Windows client, tray indicator and Disconnect.
+  - [ ] Pass the Windows end-to-end check against a local relay.
+  - [ ] Deploy the relay on Coolify and pass a cross-computer check over WSS.
+  - [ ] Add macOS menu-bar and Linux StatusNotifier indicators before enabling the client there.
 - [ ] **Publish v1.3.7 Windows update lease-path fix-forward** - keep immutable v1.3.6, repair the generated PowerShell archive-path handoff, and complete official installed acceptance (needs #r136) (owner codex) #r137
   - [x] Preserve the safe v1.3.6 failure and unchanged v1.3.5 install evidence.
   - [x] Record ADR 0040 and replace the fragile backslash literal with transport-safe `[char]92`.

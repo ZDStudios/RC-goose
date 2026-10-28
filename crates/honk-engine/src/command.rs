@@ -20,4 +20,7 @@ pub enum PokeOutcome {
     Applied,
     Unsupported,
     Busy,
+    /// Refused because schedule/presence manners (quiet hours, DND, fullscreen, calm goose) are
+    /// active. Only remote-control requests report this; local pokes keep their existing gates.
+    Quiet,
 }

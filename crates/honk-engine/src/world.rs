@@ -5,7 +5,7 @@
 //! [`Deck`](crate::rng::Deck). Tasks set targets/params; [`crate::locomotion`] moves the
 //! goose; the gait + footmark logic here is mechanical.
 
-use crate::autumn::{AutumnState, LEAF_RENDER_RADIUS};
+use crate::autumn::{AutumnPileId, AutumnState, LEAF_RENDER_RADIUS};
 use crate::collect_window::{
     CollectWindowCloseEvent, CollectWindowCloseOrigin, CollectWindowCommand, CollectWindowKind,
     CollectWindowSnapshot,
@@ -27,7 +27,7 @@ use crate::sound::Sound;
 use crate::task::{
     AffectionFollowTask, AnnoyedReactionTask, AutumnLeafPileTask, CollectWindowTask, EdgeEntryTask,
     EdgeWrapTask, ExcursionKind, ExcursionTask, FirstUxTask, GracefulExitTask, HyperTask,
-    NabMouseTask, PerchRideTask, PermissionWaitTask, Task, TaskCtx, WanderTask,
+    NabMouseTask, PerchRideTask, PermissionWaitTask, Task, TaskCtx, WalkToTask, WanderTask,
 };
 use crate::time::DT;
 use std::collections::VecDeque;
@@ -403,7 +403,7 @@ impl World {
             self.second_hourly_honk_at = None;
         }
         if !self.autumn_active() {
-            self.autumn.clear();
+            self.autumn.clear_seasonal();
         }
         self.refresh_schedule_state();
         self.rebuild_pickable();
@@ -532,6 +532,80 @@ impl World {
                 self.pending_nab = true;
                 PokeOutcome::Applied
             }
+        }
+    }
+
+    /// Apply a remote-control poke. Unlike local CLI pokes, remote requests also respect the
+    /// schedule/presence manners: while quiet, only `Wander` (calm down) is accepted.
+    pub fn remote_poke(&mut self, action: PokeAction) -> PokeOutcome {
+        if action != PokeAction::Wander && self.manners_active() && !self.remote_blocked() {
+            return PokeOutcome::Quiet;
+        }
+        self.poke(action)
+    }
+
+    /// Walk to a requested desktop point, clamped into a real monitor (remote control).
+    pub fn walk_to(&mut self, point: Vec2) -> PokeOutcome {
+        if let Some(outcome) = self.remote_gate() {
+            return outcome;
+        }
+        if self.is_cursor_mischief_active()
+            || self.is_perch_ride_active()
+            || self.is_collect_window_active()
+        {
+            return PokeOutcome::Busy;
+        }
+        self.pending_hyper = false;
+        self.pending_nab = false;
+        self.pending_collect = None;
+        self.interrupted = None;
+        self.current = Box::new(WalkToTask::new(self.layout.clamp_point(point)));
+        PokeOutcome::Applied
+    }
+
+    /// Place a leaf pile for the goose to play with (remote control).
+    pub fn place_leaves(&mut self, point: Vec2) -> Result<AutumnPileId, PokeOutcome> {
+        if let Some(outcome) = self.remote_gate() {
+            return Err(outcome);
+        }
+        let position = self.layout.clamp_point(point);
+        let id = self
+            .autumn
+            .place_pile(self.elapsed, position, &mut self.rng)
+            .ok_or(PokeOutcome::Busy)?;
+        self.refresh_schedule_state();
+        Ok(id)
+    }
+
+    /// Move a placed, unkicked leaf pile (remote control). `Unsupported` means it is gone.
+    pub fn move_leaves(&mut self, id: AutumnPileId, point: Vec2) -> PokeOutcome {
+        if let Some(outcome) = self.remote_gate() {
+            return outcome;
+        }
+        let position = self.layout.clamp_point(point);
+        if self.autumn.move_pile(id, position) {
+            PokeOutcome::Applied
+        } else {
+            PokeOutcome::Unsupported
+        }
+    }
+
+    /// Current body position in desktop coordinates (for remote status).
+    pub fn goose_position(&self) -> Vec2 {
+        self.goose.position
+    }
+
+    fn remote_blocked(&self) -> bool {
+        self.graceful_exit_requested() || self.permission_waiting()
+    }
+
+    fn remote_gate(&self) -> Option<PokeOutcome> {
+        if self.remote_blocked() {
+            Some(PokeOutcome::Busy)
+        } else if self.manners_active() {
+            Some(PokeOutcome::Quiet)
+        } else {
+            None
         }
     }
 
@@ -1168,7 +1242,7 @@ impl World {
 
         // Run the current task (it only sets targets/params); pick the next when it's done.
         let calm = self.pat.is_calm(self.elapsed) || manners_active;
-        let autumn_targets = if !manners_active && self.autumn_active() {
+        let autumn_targets = if !manners_active && self.leaves_live() {
             self.autumn.targets()
         } else {
             Vec::new()
@@ -1338,7 +1412,8 @@ impl World {
         let had_autumn_pickable = self.autumn_pickable();
         self.autumn.tick_layout(
             self.elapsed,
-            !lifecycle_exiting && !permission_waiting && self.autumn_active(),
+            !lifecycle_exiting && !permission_waiting && self.leaves_live(),
+            self.autumn_active(),
             &self.layout,
             &self.goose,
             &mut self.rng,
@@ -1547,8 +1622,13 @@ impl World {
         self.options.schedule.autumn_active(self.local_time)
     }
 
+    /// Leaf piles stay alive during the Autumn season or while requested piles remain.
+    fn leaves_live(&self) -> bool {
+        self.autumn_active() || self.autumn.has_placed_piles()
+    }
+
     fn autumn_pickable(&self) -> bool {
-        self.autumn_active() && self.autumn.has_unkicked_piles()
+        self.leaves_live() && self.autumn.has_unkicked_piles()
     }
 
     fn refresh_schedule_state(&mut self) {
@@ -4367,5 +4447,107 @@ mod tests {
             (rate - USER_CLOSE_REACTION_PROBABILITY).abs() <= 0.02,
             "observed reaction rate {rate:.4}"
         );
+    }
+
+    #[test]
+    fn remote_walk_to_clamps_arrives_lingers_and_returns_to_the_deck() {
+        let mut w = World::new(bounds(), 901);
+        while w.current_task() == "first_ux" {
+            w.tick();
+        }
+        assert_eq!(w.walk_to(Vec2::new(-5_000.0, 200.0)), PokeOutcome::Applied);
+        assert_eq!(w.current_task(), "walk_to");
+        let mut arrived = false;
+        for _ in 0..(120 * 30) {
+            w.tick();
+            if w.current_task() != "walk_to" {
+                break;
+            }
+            arrived |= w.layout().contains(w.goose_position())
+                && (w.goose_position().y - 200.0).abs() < 8.0;
+        }
+        assert!(arrived, "the clamped target stays on a real monitor");
+        assert_ne!(w.current_task(), "walk_to", "the walk ends after its dwell");
+    }
+
+    #[test]
+    fn remote_requests_respect_manners_while_local_pokes_keep_their_gates() {
+        let mut w = World::new(bounds(), 902);
+        w.set_presence(PresenceSnapshot::do_not_disturb());
+        assert!(w.manners_active());
+        assert_eq!(w.remote_poke(PokeAction::Honk), PokeOutcome::Quiet);
+        assert_eq!(w.remote_poke(PokeAction::Mud), PokeOutcome::Quiet);
+        assert_eq!(w.walk_to(Vec2::new(10.0, 10.0)), PokeOutcome::Quiet);
+        assert_eq!(
+            w.place_leaves(Vec2::new(10.0, 10.0)),
+            Err(PokeOutcome::Quiet)
+        );
+        assert_eq!(w.remote_poke(PokeAction::Wander), PokeOutcome::Applied);
+        assert_eq!(w.poke(PokeAction::Honk), PokeOutcome::Applied);
+
+        w.set_presence(PresenceSnapshot::default());
+        assert_eq!(w.remote_poke(PokeAction::Honk), PokeOutcome::Applied);
+        w.request_graceful_exit();
+        assert_eq!(w.walk_to(Vec2::new(10.0, 10.0)), PokeOutcome::Busy);
+    }
+
+    #[test]
+    fn placed_leaves_live_without_the_season_move_and_stay_bounded() {
+        let mut w = World::new(bounds(), 903);
+        let id = w.place_leaves(Vec2::new(300.0, 300.0)).unwrap();
+        for _ in 0..240 {
+            w.tick();
+        }
+        assert!(
+            w.autumn().piles().iter().any(|pile| pile.id == id),
+            "placed piles survive with the Autumn season off"
+        );
+        assert_eq!(
+            w.move_leaves(id, Vec2::new(500.0, 400.0)),
+            PokeOutcome::Applied
+        );
+        let pile = w.autumn().piles().iter().find(|p| p.id == id).unwrap();
+        assert_eq!(pile.position, Vec2::new(500.0, 400.0));
+        assert_eq!(
+            w.move_leaves(AutumnPileId(9_999), Vec2::ZERO),
+            PokeOutcome::Unsupported
+        );
+
+        // Applying options with the season off keeps requested piles.
+        w.apply_options(WorldOptions::default());
+        assert!(w.autumn().piles().iter().any(|pile| pile.id == id));
+
+        for _ in 1..crate::autumn::MAX_LEAF_PILES {
+            w.place_leaves(Vec2::new(100.0, 100.0)).unwrap();
+        }
+        assert_eq!(
+            w.place_leaves(Vec2::new(100.0, 100.0)),
+            Err(PokeOutcome::Busy)
+        );
+    }
+
+    #[test]
+    fn walking_through_a_placed_pile_kicks_it() {
+        let mut w = World::new(bounds(), 904);
+        while w.current_task() == "first_ux" {
+            w.tick();
+        }
+        let target = Vec2::new(400.0, 400.0);
+        let id = w.place_leaves(target).unwrap();
+        assert_eq!(w.walk_to(target), PokeOutcome::Applied);
+        let mut kicked = false;
+        for _ in 0..(120 * 20) {
+            w.tick();
+            kicked |= w
+                .autumn()
+                .piles()
+                .iter()
+                .any(|pile| pile.id == id && pile.kicked_at.is_some());
+            if kicked {
+                break;
+            }
+        }
+        assert!(kicked);
+        assert_eq!(w.move_leaves(id, target), PokeOutcome::Unsupported);
     }
 }

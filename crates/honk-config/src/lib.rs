@@ -42,6 +42,7 @@ pub struct Config {
     pub safety: SafetyConfig,
     pub platform: PlatformConfig,
     pub lifecycle: LifecycleConfig,
+    pub remote: RemoteConfig,
 }
 
 impl Default for Config {
@@ -63,8 +64,78 @@ impl Default for Config {
             safety: SafetyConfig::default(),
             platform: PlatformConfig::default(),
             lifecycle: LifecycleConfig::default(),
+            remote: RemoteConfig::default(),
         }
     }
+}
+
+/// Opt-in remote control through a self-hosted relay (ADR 0059). Off by default; changes apply
+/// on reload. The goose only ever opens an outbound WebSocket to `relay_url`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RemoteConfig {
+    pub enabled: bool,
+    /// `wss://` relay endpoint, e.g. `wss://goose.example.com/ws`. Plain `ws://` is accepted only
+    /// for `localhost`/loopback testing.
+    pub relay_url: String,
+    /// Shared secret matching the relay's `RELAY_TOKEN`.
+    pub token: String,
+    /// Name shown in the control panel. Empty uses the computer's name.
+    pub device_name: String,
+}
+
+impl RemoteConfig {
+    /// Validation problems for an enabled remote section (an empty list means usable).
+    pub fn problems(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if !self.enabled {
+            return errors;
+        }
+        if !relay_url_allowed(&self.relay_url) {
+            errors.push(
+                "remote.relay_url must be a wss:// URL (ws:// is allowed only for localhost)"
+                    .into(),
+            );
+        }
+        if self.token.trim().len() < 16 {
+            errors.push("remote.token must be at least 16 characters".into());
+        }
+        if !self.device_name.is_empty() && !device_name_allowed(&self.device_name) {
+            errors.push(
+                "remote.device_name must be 1-40 letters, digits, spaces, dots, dashes or underscores"
+                    .into(),
+            );
+        }
+        errors
+    }
+}
+
+fn relay_url_allowed(url: &str) -> bool {
+    let (secure, rest) = if let Some(rest) = url.strip_prefix("wss://") {
+        (true, rest)
+    } else if let Some(rest) = url.strip_prefix("ws://") {
+        (false, rest)
+    } else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') || url.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        bracketed.split(']').next().unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    secure || matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+/// The relay accepts the same name alphabet (`relay/server.js`).
+pub fn device_name_allowed(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    name.len() <= 40
+        && bytes.next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'.' | b'_' | b'-'))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1004,6 +1075,16 @@ impl Config {
             "autostart_on_login",
             self.lifecycle.autostart_on_login,
         );
+
+        // Only materialize [remote] once someone has configured it, so ordinary saves do not
+        // add an empty remote-control section to every config file.
+        if self.remote != RemoteConfig::default() || doc.as_table().contains_key("remote") {
+            let remote = table_mut(doc, "remote");
+            set_bool(remote, "enabled", self.remote.enabled);
+            remote["relay_url"] = value(self.remote.relay_url.as_str());
+            remote["token"] = value(self.remote.token.as_str());
+            remote["device_name"] = value(self.remote.device_name.as_str());
+        }
     }
 }
 
@@ -1256,6 +1337,7 @@ fn unknown_key_warning(text: &str) -> Option<String> {
         "safety",
         "platform",
         "lifecycle",
+        "remote",
     ];
     for (key, item) in doc.as_table().iter() {
         if !root_allowed.contains(&key) {
@@ -1340,6 +1422,7 @@ fn known_section_keys(section: &str) -> &'static [&'static str] {
         "safety" => &["pause_on_fullscreen", "no_mouse_steal", "no_window_ride"],
         "platform" => &["wayland"],
         "lifecycle" => &["autostart_on_login"],
+        "remote" => &["enabled", "relay_url", "token", "device_name"],
         _ => &[],
     }
 }
@@ -1519,6 +1602,73 @@ mod tests {
         assert!(saved.contains("# personal settings") && saved.contains("future = 3 # retained"));
         let loaded = Config::load_existing(&path).unwrap();
         assert!(!loaded.appearance.expressions && loaded.appearance.reduced_motion);
+    }
+
+    #[test]
+    fn remote_control_defaults_off_and_validates_only_when_enabled() {
+        let mut config = Config::default();
+        assert!(!config.remote.enabled);
+        assert!(config.validate().is_ok());
+        // A broken [remote] section disables remote control only; it never blocks the goose.
+        config.remote.enabled = true;
+        assert!(config.validate().is_ok());
+        assert!(!config.remote.problems().is_empty());
+
+        let mut remote = RemoteConfig {
+            enabled: true,
+            relay_url: "wss://goose.example.com/ws".into(),
+            token: "0123456789abcdef".into(),
+            device_name: "Office PC".into(),
+        };
+        assert!(remote.problems().is_empty());
+        for url in [
+            "ws://localhost:8080/ws",
+            "ws://127.0.0.1:8080/ws",
+            "ws://[::1]:8080/ws",
+        ] {
+            remote.relay_url = url.into();
+            assert!(remote.problems().is_empty(), "{url}");
+        }
+        for url in [
+            "ws://goose.example.com/ws",
+            "https://goose.example.com",
+            "wss://",
+            "wss://user@goose.example.com",
+            "",
+        ] {
+            remote.relay_url = url.into();
+            assert_eq!(remote.problems().len(), 1, "{url}");
+        }
+        remote.relay_url = "wss://goose.example.com/ws".into();
+        remote.token = "short".into();
+        remote.device_name = "-bad/name".into();
+        assert_eq!(remote.problems().len(), 2);
+        remote.enabled = false;
+        assert!(remote.problems().is_empty());
+    }
+
+    #[test]
+    fn remote_section_round_trips_and_is_not_added_to_untouched_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        Config::default().save_atomic(&path).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("[remote]"));
+
+        let config = Config {
+            remote: RemoteConfig {
+                enabled: true,
+                relay_url: "wss://goose.example.com/ws".into(),
+                token: "0123456789abcdef".into(),
+                device_name: String::new(),
+            },
+            ..Config::default()
+        };
+        config.save_atomic(&path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[remote]"));
+        assert!(unknown_key_warning(&text).is_none());
+        let loaded = Config::load_existing(&path).unwrap();
+        assert_eq!(loaded.remote, config.remote);
     }
 
     #[test]

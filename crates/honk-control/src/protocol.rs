@@ -32,6 +32,14 @@ pub enum ControlCommand {
     PointerRequest,
     PointerCancel,
     Do(PokeAction),
+    /// Remote-control requests (ADR 0059). They reuse the engine actions but also respect
+    /// schedule/presence manners, which local `DO` pokes deliberately do not.
+    RemoteDo(PokeAction),
+    WalkTo(i32, i32),
+    LeafPlace(i32, i32),
+    LeafMove(u64, i32, i32),
+    Snapshot,
+    Leaves,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +50,32 @@ pub enum ControlResponse {
     Presence(PresenceStatus),
     Session(SessionStatus),
     Wayland(WaylandStatus),
+    Leaf(u64),
+    Snapshot(RemoteSnapshot),
+    Leaves(Vec<LeafPosition>),
+}
+
+/// Upper bound on leaf piles reported in one `LEAVES` frame; matches the engine pile cap.
+pub const MAX_REPORTED_LEAVES: usize = 6;
+
+/// Compact live view of the goose for remote status reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteSnapshot {
+    pub task: String,
+    pub x: i32,
+    pub y: i32,
+    pub left: i32,
+    pub top: i32,
+    pub width: u32,
+    pub height: u32,
+    pub quiet: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeafPosition {
+    pub id: u64,
+    pub x: i32,
+    pub y: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +179,12 @@ impl ControlCommand {
             Self::PointerRequest => format!("{VERSION} POINTER_REQUEST\n"),
             Self::PointerCancel => format!("{VERSION} POINTER_CANCEL\n"),
             Self::Do(action) => format!("{VERSION} DO {}\n", encode_action(action)),
+            Self::RemoteDo(action) => format!("{VERSION} RDO {}\n", encode_action(action)),
+            Self::WalkTo(x, y) => format!("{VERSION} WALK_TO {x} {y}\n"),
+            Self::LeafPlace(x, y) => format!("{VERSION} LEAF_PLACE {x} {y}\n"),
+            Self::LeafMove(id, x, y) => format!("{VERSION} LEAF_MOVE {id} {x} {y}\n"),
+            Self::Snapshot => format!("{VERSION} SNAPSHOT\n"),
+            Self::Leaves => format!("{VERSION} LEAVES\n"),
         }
     }
 
@@ -222,12 +262,42 @@ impl ControlCommand {
                 ensure_end(parts)?;
                 Ok(Self::Session)
             }
-            "DO" => {
+            "DO" | "RDO" => {
                 let Some(action) = parts.next() else {
                     return Err(ProtocolError::MissingAction);
                 };
                 ensure_end(parts)?;
-                Ok(Self::Do(decode_action(action)?))
+                let action = decode_action(action)?;
+                Ok(if command == "DO" {
+                    Self::Do(action)
+                } else {
+                    Self::RemoteDo(action)
+                })
+            }
+            "WALK_TO" | "LEAF_PLACE" => {
+                let x = parse_number(parts.next())?;
+                let y = parse_number(parts.next())?;
+                ensure_end(parts)?;
+                Ok(if command == "WALK_TO" {
+                    Self::WalkTo(x, y)
+                } else {
+                    Self::LeafPlace(x, y)
+                })
+            }
+            "LEAF_MOVE" => {
+                let id = parse_number(parts.next())?;
+                let x = parse_number(parts.next())?;
+                let y = parse_number(parts.next())?;
+                ensure_end(parts)?;
+                Ok(Self::LeafMove(id, x, y))
+            }
+            "SNAPSHOT" | "LEAVES" => {
+                ensure_end(parts)?;
+                Ok(if command == "SNAPSHOT" {
+                    Self::Snapshot
+                } else {
+                    Self::Leaves
+                })
             }
             _ => Err(ProtocolError::UnknownCommand),
         }
@@ -242,6 +312,7 @@ impl From<PokeOutcome> for ControlResponse {
             PokeOutcome::Applied => Self::Ok,
             PokeOutcome::Busy => Self::Err("BUSY".into()),
             PokeOutcome::Unsupported => Self::Err("UNSUPPORTED".into()),
+            PokeOutcome::Quiet => Self::Err("QUIET".into()),
         }
     }
 }
@@ -255,6 +326,16 @@ impl ControlResponse {
             Self::Presence(status) => status.encode(),
             Self::Session(session) => session.encode(),
             Self::Wayland(status) => status.encode(),
+            Self::Leaf(id) => format!("LEAF {id}\n"),
+            Self::Snapshot(snapshot) => snapshot.encode(),
+            Self::Leaves(leaves) => {
+                let mut frame = String::from("LEAVES");
+                for leaf in leaves.iter().take(MAX_REPORTED_LEAVES) {
+                    frame.push_str(&format!(" {}:{},{}", leaf.id, leaf.x, leaf.y));
+                }
+                frame.push('\n');
+                frame
+            }
         }
     }
 
@@ -283,6 +364,23 @@ impl ControlResponse {
             Some("PRESENCE") => PresenceStatus::decode(parts).map(Self::Presence),
             Some("SESSION") => SessionStatus::decode(parts).map(Self::Session),
             Some("WAYLAND") => WaylandStatus::decode(parts).map(Self::Wayland),
+            Some("LEAF") => {
+                let id =
+                    parse_number(parts.next()).map_err(|_| ProtocolError::MalformedResponse)?;
+                ensure_end(parts)?;
+                Ok(Self::Leaf(id))
+            }
+            Some("SNAP") => RemoteSnapshot::decode(parts).map(Self::Snapshot),
+            Some("LEAVES") => {
+                let mut leaves = Vec::new();
+                for token in parts {
+                    if leaves.len() == MAX_REPORTED_LEAVES {
+                        return Err(ProtocolError::MalformedResponse);
+                    }
+                    leaves.push(LeafPosition::decode(token)?);
+                }
+                Ok(Self::Leaves(leaves))
+            }
             _ => Err(ProtocolError::MalformedResponse),
         }
     }
@@ -396,6 +494,110 @@ impl RuntimeStatus {
         } else {
             Err(ProtocolError::MalformedResponse)
         }
+    }
+}
+
+impl RemoteSnapshot {
+    fn encode(&self) -> String {
+        format!(
+            "SNAP T={} X={} Y={} L={} U={} W={} H={} Q={}\n",
+            self.task,
+            self.x,
+            self.y,
+            self.left,
+            self.top,
+            self.width,
+            self.height,
+            u8::from(self.quiet)
+        )
+    }
+
+    fn decode(parts: std::str::SplitAsciiWhitespace<'_>) -> Result<Self, ProtocolError> {
+        let mut snapshot = RemoteSnapshot {
+            task: String::new(),
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            width: 0,
+            height: 0,
+            quiet: false,
+        };
+        let mut seen = 0u8;
+        for token in parts {
+            let (key, value) = token
+                .split_once('=')
+                .ok_or(ProtocolError::MalformedResponse)?;
+            let malformed = |_| ProtocolError::MalformedResponse;
+            let bit = match key {
+                "T" => {
+                    if value.is_empty()
+                        || value.len() > 32
+                        || !value.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                    {
+                        return Err(ProtocolError::MalformedResponse);
+                    }
+                    snapshot.task = value.to_string();
+                    0
+                }
+                "X" => {
+                    snapshot.x = parse_number(Some(value)).map_err(malformed)?;
+                    1
+                }
+                "Y" => {
+                    snapshot.y = parse_number(Some(value)).map_err(malformed)?;
+                    2
+                }
+                "L" => {
+                    snapshot.left = parse_number(Some(value)).map_err(malformed)?;
+                    3
+                }
+                "U" => {
+                    snapshot.top = parse_number(Some(value)).map_err(malformed)?;
+                    4
+                }
+                "W" => {
+                    snapshot.width = parse_number(Some(value)).map_err(malformed)?;
+                    5
+                }
+                "H" => {
+                    snapshot.height = parse_number(Some(value)).map_err(malformed)?;
+                    6
+                }
+                "Q" => {
+                    snapshot.quiet = match value {
+                        "0" => false,
+                        "1" => true,
+                        _ => return Err(ProtocolError::MalformedResponse),
+                    };
+                    7
+                }
+                _ => return Err(ProtocolError::MalformedResponse),
+            };
+            seen |= 1 << bit;
+        }
+        if seen == u8::MAX {
+            Ok(snapshot)
+        } else {
+            Err(ProtocolError::MalformedResponse)
+        }
+    }
+}
+
+impl LeafPosition {
+    fn decode(token: &str) -> Result<Self, ProtocolError> {
+        let malformed = |_| ProtocolError::MalformedResponse;
+        let (id, point) = token
+            .split_once(':')
+            .ok_or(ProtocolError::MalformedResponse)?;
+        let (x, y) = point
+            .split_once(',')
+            .ok_or(ProtocolError::MalformedResponse)?;
+        Ok(Self {
+            id: parse_number(Some(id)).map_err(malformed)?,
+            x: parse_number(Some(x)).map_err(malformed)?,
+            y: parse_number(Some(y)).map_err(malformed)?,
+        })
     }
 }
 
@@ -513,6 +715,13 @@ fn ensure_end(mut parts: std::str::SplitAsciiWhitespace<'_>) -> Result<(), Proto
     }
 }
 
+fn parse_number<T: std::str::FromStr>(token: Option<&str>) -> Result<T, ProtocolError> {
+    token
+        .ok_or(ProtocolError::MissingAction)?
+        .parse()
+        .map_err(|_| ProtocolError::UnknownCommand)
+}
+
 fn encode_action(action: PokeAction) -> &'static str {
     match action {
         PokeAction::Honk => "HONK",
@@ -554,6 +763,12 @@ mod tests {
             ControlCommand::Do(PokeAction::Meme),
             ControlCommand::Do(PokeAction::Note),
             ControlCommand::Do(PokeAction::Nab),
+            ControlCommand::RemoteDo(PokeAction::Meme),
+            ControlCommand::WalkTo(-2_560, 1_439),
+            ControlCommand::LeafPlace(0, 0),
+            ControlCommand::LeafMove(u64::MAX, i32::MIN, i32::MAX),
+            ControlCommand::Snapshot,
+            ControlCommand::Leaves,
         ] {
             assert_eq!(
                 ControlCommand::decode(command.encode().as_bytes()).unwrap(),
@@ -592,6 +807,67 @@ mod tests {
     }
 
     #[test]
+    fn rejects_malformed_remote_commands() {
+        assert_eq!(
+            ControlCommand::decode(b"HONK300/1 WALK_TO 10\n"),
+            Err(ProtocolError::MissingAction)
+        );
+        assert_eq!(
+            ControlCommand::decode(b"HONK300/1 WALK_TO 1.5 2\n"),
+            Err(ProtocolError::UnknownCommand)
+        );
+        assert_eq!(
+            ControlCommand::decode(b"HONK300/1 LEAF_MOVE -1 2 3\n"),
+            Err(ProtocolError::UnknownCommand)
+        );
+        assert_eq!(
+            ControlCommand::decode(b"HONK300/1 SNAPSHOT NOW\n"),
+            Err(ProtocolError::ExtraTokens)
+        );
+    }
+
+    #[test]
+    fn remote_responses_round_trip_under_the_frame_limit() {
+        let snapshot = ControlResponse::Snapshot(RemoteSnapshot {
+            task: "collect_window_annoyed".into(),
+            x: -1_234_567,
+            y: 1_234_567,
+            left: -7_680,
+            top: -2_160,
+            width: 15_360,
+            height: 4_320,
+            quiet: true,
+        });
+        let leaves = ControlResponse::Leaves(
+            (0..MAX_REPORTED_LEAVES as u64)
+                .map(|id| LeafPosition {
+                    id: 1_000 + id,
+                    x: -10_000,
+                    y: 10_000,
+                })
+                .collect(),
+        );
+        for response in [
+            snapshot,
+            leaves,
+            ControlResponse::Leaf(42),
+            ControlResponse::Leaves(vec![]),
+        ] {
+            let frame = response.encode();
+            assert!(frame.len() <= MAX_FRAME_BYTES, "{frame}");
+            assert_eq!(ControlResponse::decode(frame.as_bytes()).unwrap(), response);
+        }
+        assert_eq!(
+            ControlResponse::decode(b"SNAP T=Wander X=1 Y=1 L=0 U=0 W=1 H=1 Q=0\n"),
+            Err(ProtocolError::MalformedResponse)
+        );
+        assert_eq!(
+            ControlResponse::decode(b"SNAP T=wander X=1 Y=1 L=0 U=0 W=1 H=1\n"),
+            Err(ProtocolError::MalformedResponse)
+        );
+    }
+
+    #[test]
     fn maps_poke_outcomes_to_responses() {
         assert_eq!(
             ControlResponse::from(PokeOutcome::Applied),
@@ -604,6 +880,10 @@ mod tests {
         assert_eq!(
             ControlResponse::from(PokeOutcome::Unsupported),
             ControlResponse::Err("UNSUPPORTED".into())
+        );
+        assert_eq!(
+            ControlResponse::from(PokeOutcome::Quiet),
+            ControlResponse::Err("QUIET".into())
         );
     }
 

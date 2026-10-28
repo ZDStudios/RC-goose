@@ -21,8 +21,8 @@ pub use platform::{
     SingletonStatus, UpdateGuard,
 };
 pub use protocol::{
-    BundleStatus, CapabilityStatus, ControlCommand, ControlResponse, PlatformStatus, ProtocolError,
-    RuntimeStatus,
+    BundleStatus, CapabilityStatus, ControlCommand, ControlResponse, LeafPosition, PlatformStatus,
+    ProtocolError, RemoteSnapshot, RuntimeStatus, MAX_REPORTED_LEAVES,
 };
 
 /// A user action emitted by an operating-system control surface.
@@ -36,4 +36,16 @@ pub enum ControlSurfaceCommand {
     Configure,
     Update,
     Quit,
+    /// End the opt-in remote-control connection for this session (ADR 0059). The runtime owns
+    /// the connection, so it handles this before the shared configure/update/quit dispatch.
+    DisconnectRemote,
+}
+
+/// Remote-control connection state that native control surfaces must show (ADR 0059).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RemoteIndicator {
+    #[default]
+    Off,
+    Connecting,
+    Connected,
 }

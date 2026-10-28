@@ -103,6 +103,11 @@ embed-resource = "3.0.11"
 
 [target.'cfg(windows)'.dependencies]
 honk-platform-windows = { path = "crates/honk-platform-windows" }
+# Opt-in remote control (ADR 0059), Windows-first because the tray indicator ships there first:
+# one blocking outbound WebSocket thread. TLS uses rustls with the pure ring provider and bundled
+# Mozilla roots, so no system OpenSSL or aws-lc toolchain is needed.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 # Audio playback (honks/bite/mud/pat). Pure-Rust decode via symphonia; cpal backend.
 # Windows-scoped for now; the macOS/Linux backends wire audio in M16/M17.
 rodio = "0.20"
