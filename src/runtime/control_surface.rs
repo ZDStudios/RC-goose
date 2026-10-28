@@ -211,6 +211,9 @@ pub(crate) fn handle_command(
             RuntimeCore::begin_graceful_stop(world);
             Ok(())
         }
+        // The runtime owns the remote connection and intercepts this before dispatch; reaching
+        // the shared router means remote control is not running on this platform.
+        ControlSurfaceCommand::DisconnectRemote => Ok(()),
     }
 }
 
@@ -219,6 +222,7 @@ pub(crate) fn command_name(command: ControlSurfaceCommand) -> &'static str {
         ControlSurfaceCommand::Configure => "Configure",
         ControlSurfaceCommand::Update => "Update",
         ControlSurfaceCommand::Quit => "Quit",
+        ControlSurfaceCommand::DisconnectRemote => "Disconnect remote control",
     }
 }
 

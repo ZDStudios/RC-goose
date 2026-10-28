@@ -1,4 +1,4 @@
-use honk_control::ControlSurfaceCommand;
+use honk_control::{ControlSurfaceCommand, RemoteIndicator};
 use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_GUID, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP,
+    Shell_NotifyIconW, NIF_GUID, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO,
     NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETFOCUS, NIM_SETVERSION, NIN_SELECT,
     NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
 };
@@ -17,7 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
     DestroyWindow, EndMenu, GetCursorPos, LoadImageW, PostMessageW, RegisterClassExW,
     RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenu, HICON, IMAGE_ICON,
-    LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, SM_CXSMICON, SM_CYSMICON, TPM_RETURNCMD,
+    LR_DEFAULTCOLOR, MF_GRAYED, MF_SEPARATOR, MF_STRING, SM_CXSMICON, SM_CYSMICON, TPM_RETURNCMD,
     TPM_RIGHTBUTTON, WM_CONTEXTMENU, WM_DESTROY, WM_NULL, WM_USER, WNDCLASSEXW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_POPUP,
 };
@@ -27,6 +27,8 @@ const NIN_KEYSELECT: u32 = NIN_SELECT + 1;
 const CONFIGURE_COMMAND_ID: usize = 1;
 const QUIT_COMMAND_ID: usize = 2;
 const UPDATE_COMMAND_ID: usize = 3;
+const DISCONNECT_REMOTE_COMMAND_ID: usize = 4;
+const REMOTE_STATUS_ID: usize = 5;
 const TRAY_ICON_ID: u32 = 1;
 const ADD_RETRY_DELAY: Duration = Duration::from_millis(100);
 const ADD_FAILURE_NOTICE_AFTER: Duration = Duration::from_secs(3);
@@ -38,6 +40,40 @@ static TASKBAR_CREATED_MESSAGE: AtomicU32 = AtomicU32::new(0);
 static SMOKE_TRAY_QUIT_MESSAGE: AtomicU32 = AtomicU32::new(0);
 static TASKBAR_READD_REQUESTED: AtomicBool = AtomicBool::new(false);
 static COMMANDS: OnceLock<Mutex<VecDeque<ControlSurfaceCommand>>> = OnceLock::new();
+/// Remote-control state mirrored for the menu, which the window procedure builds on demand.
+static REMOTE: Mutex<RemoteMenuState> = Mutex::new(RemoteMenuState {
+    indicator: RemoteIndicator::Off,
+    host: String::new(),
+});
+
+struct RemoteMenuState {
+    indicator: RemoteIndicator,
+    host: String,
+}
+
+fn remote_state() -> (RemoteIndicator, String) {
+    let state = REMOTE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    (state.indicator, state.host.clone())
+}
+
+/// Visible label for the remote-control state; `None` while remote control is off.
+fn remote_status_label(indicator: RemoteIndicator, host: &str) -> Option<String> {
+    match indicator {
+        RemoteIndicator::Off => None,
+        RemoteIndicator::Connecting => Some(format!("Remote control: connecting to {host}…")),
+        RemoteIndicator::Connected => Some(format!("● Remote control ON — {host}")),
+    }
+}
+
+fn tooltip_text(indicator: RemoteIndicator) -> &'static str {
+    match indicator {
+        RemoteIndicator::Off => "Goose controls",
+        RemoteIndicator::Connecting => "Goose controls — remote control connecting",
+        RemoteIndicator::Connected => "Goose controls — REMOTE CONTROL ON",
+    }
+}
 
 fn command_queue() -> &'static Mutex<VecDeque<ControlSurfaceCommand>> {
     COMMANDS.get_or_init(|| Mutex::new(VecDeque::new()))
@@ -176,6 +212,42 @@ impl StatusTray {
         Ok(())
     }
 
+    /// Mirror the runtime's remote-control state into the tooltip and menu. Becoming connected
+    /// also raises a one-time notification so remote control is never silent.
+    pub fn set_remote_indicator(&mut self, indicator: RemoteIndicator, host: &str) {
+        let previous = {
+            let mut state = REMOTE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.indicator == indicator && state.host == host {
+                return;
+            }
+            let previous = state.indicator;
+            state.indicator = indicator;
+            state.host = host.to_string();
+            previous
+        };
+        if !self.added {
+            return;
+        }
+        let mut data = self.notify_data();
+        data.uFlags = NIF_GUID | NIF_TIP | NIF_SHOWTIP;
+        if indicator == RemoteIndicator::Connected && previous != RemoteIndicator::Connected {
+            data.uFlags |= NIF_INFO;
+            data.dwInfoFlags = NIIF_INFO;
+            write_utf16(&mut data.szInfoTitle, "Goose remote control is on");
+            write_utf16(
+                &mut data.szInfo,
+                &format!(
+                    "This goose can be controlled through {host}. Use the tray menu to disconnect."
+                ),
+            );
+        }
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
+        }
+    }
+
     pub fn take_command(&self) -> Option<ControlSurfaceCommand> {
         with_commands(VecDeque::pop_front)
     }
@@ -222,7 +294,7 @@ impl StatusTray {
             guidItem: TRAY_ICON_GUID,
             ..Default::default()
         };
-        write_utf16(&mut data.szTip, "Goose controls");
+        write_utf16(&mut data.szTip, tooltip_text(remote_state().0));
         data
     }
 }
@@ -292,6 +364,22 @@ unsafe fn show_menu(hwnd: HWND, mut point: POINT) {
         return;
     };
     let result = (|| -> windows::core::Result<()> {
+        let (indicator, host) = remote_state();
+        if let Some(label) = remote_status_label(indicator, &host) {
+            AppendMenuW(
+                menu,
+                MF_STRING | MF_GRAYED,
+                REMOTE_STATUS_ID,
+                PCWSTR(wide(&label).as_ptr()),
+            )?;
+            AppendMenuW(
+                menu,
+                MF_STRING,
+                DISCONNECT_REMOTE_COMMAND_ID,
+                PCWSTR(wide("Disconnect remote control").as_ptr()),
+            )?;
+            AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())?;
+        }
         AppendMenuW(
             menu,
             MF_STRING,
@@ -346,6 +434,7 @@ fn command_for_menu_selection(selection: usize) -> Option<ControlSurfaceCommand>
         CONFIGURE_COMMAND_ID => Some(ControlSurfaceCommand::Configure),
         UPDATE_COMMAND_ID => Some(ControlSurfaceCommand::Update),
         QUIT_COMMAND_ID => Some(ControlSurfaceCommand::Quit),
+        DISCONNECT_REMOTE_COMMAND_ID => Some(ControlSurfaceCommand::DisconnectRemote),
         _ => None,
     }
 }
@@ -430,11 +519,12 @@ fn failure(message: impl AsRef<str>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        command_for_menu_selection, point_from_callback, smoke_tray_quit_message_name, write_utf16,
-        ADD_FAILURE_NOTICE_AFTER, ADD_RETRY_DELAY, CONFIGURE_COMMAND_ID, DEGRADED_ADD_RETRY_DELAY,
-        QUIT_COMMAND_ID, UPDATE_COMMAND_ID,
+        command_for_menu_selection, point_from_callback, remote_status_label,
+        smoke_tray_quit_message_name, tooltip_text, write_utf16, ADD_FAILURE_NOTICE_AFTER,
+        ADD_RETRY_DELAY, CONFIGURE_COMMAND_ID, DEGRADED_ADD_RETRY_DELAY,
+        DISCONNECT_REMOTE_COMMAND_ID, QUIT_COMMAND_ID, REMOTE_STATUS_ID, UPDATE_COMMAND_ID,
     };
-    use honk_control::ControlSurfaceCommand;
+    use honk_control::{ControlSurfaceCommand, RemoteIndicator};
     use std::ffi::OsStr;
     use windows::Win32::Foundation::WPARAM;
 
@@ -479,8 +569,33 @@ mod tests {
             command_for_menu_selection(QUIT_COMMAND_ID),
             Some(ControlSurfaceCommand::Quit)
         );
+        assert_eq!(
+            command_for_menu_selection(DISCONNECT_REMOTE_COMMAND_ID),
+            Some(ControlSurfaceCommand::DisconnectRemote)
+        );
+        assert_eq!(command_for_menu_selection(REMOTE_STATUS_ID), None);
         assert_eq!(command_for_menu_selection(0), None);
         assert_eq!(command_for_menu_selection(usize::MAX), None);
+    }
+
+    #[test]
+    fn remote_control_is_always_visible_while_active() {
+        assert_eq!(remote_status_label(RemoteIndicator::Off, "relay"), None);
+        assert!(
+            remote_status_label(RemoteIndicator::Connected, "relay.example.com")
+                .unwrap()
+                .contains("relay.example.com")
+        );
+        assert!(remote_status_label(RemoteIndicator::Connecting, "relay").is_some());
+        assert_eq!(tooltip_text(RemoteIndicator::Off), "Goose controls");
+        assert!(tooltip_text(RemoteIndicator::Connected).contains("REMOTE CONTROL ON"));
+        for indicator in [
+            RemoteIndicator::Off,
+            RemoteIndicator::Connecting,
+            RemoteIndicator::Connected,
+        ] {
+            assert!(tooltip_text(indicator).encode_utf16().count() < 128);
+        }
     }
 
     #[test]

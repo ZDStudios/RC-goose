@@ -43,6 +43,7 @@ pub mod schedule;
 pub mod sound;
 pub mod task;
 pub mod time;
+pub mod toys;
 pub mod world;
 
 // A curated surface for downstream crates (the platform backends, the eventual binary).
@@ -82,7 +83,8 @@ pub use sound::{HonkTone, Sound};
 pub use task::{
     AnnoyedReactionTask, AutumnLeafPileTask, CollectWindowTask, EdgeEntryTask, EdgeWrapTask,
     FirstUxTask, GracefulExitTask, HyperTask, NabMouseTask, PerchRideTask, PermissionWaitTask,
-    Task, WanderTask,
+    Task, ToyPlayTask, WalkToTask, WanderTask,
 };
 pub use time::{Accumulator, Clock, DT, FRAMERATE};
+pub use toys::{Toy, ToyId, ToyKind, ToyState, MAX_TOYS};
 pub use world::World;

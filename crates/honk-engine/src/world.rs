@@ -27,9 +27,11 @@ use crate::sound::Sound;
 use crate::task::{
     AffectionFollowTask, AnnoyedReactionTask, AutumnLeafPileTask, CollectWindowTask, EdgeEntryTask,
     EdgeWrapTask, ExcursionKind, ExcursionTask, FirstUxTask, GracefulExitTask, HyperTask,
-    NabMouseTask, PerchRideTask, PermissionWaitTask, Task, TaskCtx, WanderTask,
+    NabMouseTask, PerchRideTask, PermissionWaitTask, Task, TaskCtx, ToyPlayTask, WalkToTask,
+    WanderTask,
 };
 use crate::time::DT;
+use crate::toys::{ToyId, ToyKind, ToyState, TOY_RENDER_RADIUS};
 use std::collections::VecDeque;
 
 /// Distance travelled per full walking-gait cycle (radians of `gait_phase` per `TAU`).
@@ -38,6 +40,8 @@ const SECOND_HOURLY_HONK_DELAY: f64 = 0.35;
 const LIFECYCLE_EDGE_MARGIN: f32 = 220.0;
 const LIFECYCLE_EDGE_INSET: f32 = 56.0;
 const USER_CLOSE_REACTION_PROBABILITY: f64 = 0.30;
+/// Per-tick chance that a wandering goose returns to a lying-around toy (about every 5 s).
+const TOY_IDLE_PLAY_CHANCE: f64 = 1.0 / 600.0;
 
 /// The whole simulation: one goose roaming within `bounds` (the virtual-desktop space).
 pub struct World {
@@ -73,6 +77,8 @@ pub struct World {
     mood: MoodMachine,
     /// Built-in Autumn leaf-pile state.
     autumn: AutumnState,
+    /// Remote-control toys (ADR 0059).
+    toys: ToyState,
     /// Latest runtime-sampled local time, if the platform has provided one.
     local_time: Option<LocalTime>,
     /// Latest platform-reported DND/fullscreen presence state.
@@ -219,6 +225,7 @@ impl World {
             sleepies: ZParticles::new(),
             mood,
             autumn: AutumnState::new(),
+            toys: ToyState::new(),
             local_time,
             presence,
             last_manners_active,
@@ -462,6 +469,7 @@ impl World {
         self.goose.track_mud_end_time = self.elapsed;
         self.goose.foot_marks = Default::default();
         self.autumn.clear();
+        self.toys.clear();
     }
 
     /// Move the permission-wait anchor after a display-topology change.
@@ -532,6 +540,91 @@ impl World {
                 self.pending_nab = true;
                 PokeOutcome::Applied
             }
+        }
+    }
+
+    /// Apply a remote-control poke. Unlike local CLI pokes, remote requests also respect the
+    /// schedule/presence manners: while quiet, only `Wander` (calm down) is accepted.
+    pub fn remote_poke(&mut self, action: PokeAction) -> PokeOutcome {
+        if action != PokeAction::Wander && self.manners_active() && !self.remote_blocked() {
+            return PokeOutcome::Quiet;
+        }
+        self.poke(action)
+    }
+
+    /// Walk to a requested desktop point, clamped into a real monitor (remote control).
+    pub fn walk_to(&mut self, point: Vec2) -> PokeOutcome {
+        if let Some(outcome) = self.remote_gate() {
+            return outcome;
+        }
+        if self.is_cursor_mischief_active()
+            || self.is_perch_ride_active()
+            || self.is_collect_window_active()
+        {
+            return PokeOutcome::Busy;
+        }
+        self.pending_hyper = false;
+        self.pending_nab = false;
+        self.pending_collect = None;
+        self.interrupted = None;
+        self.current = Box::new(WalkToTask::new(self.layout.clamp_point(point)));
+        PokeOutcome::Applied
+    }
+
+    /// Place a toy for the goose to play with (remote control). A goose that is only wandering
+    /// or playing goes straight for it; busier errands finish first.
+    pub fn place_toy(&mut self, kind: ToyKind, point: Vec2) -> Result<ToyId, PokeOutcome> {
+        if let Some(outcome) = self.remote_gate() {
+            return Err(outcome);
+        }
+        let position = self.layout.clamp_point(point);
+        let id = self
+            .toys
+            .place(self.elapsed, kind, position)
+            .ok_or(PokeOutcome::Busy)?;
+        if matches!(self.current.id(), "wander" | "toy_play" | "walk_to") {
+            self.toys.release_all();
+            self.interrupted = None;
+            self.current = Box::new(ToyPlayTask::targeting(id));
+        }
+        Ok(id)
+    }
+
+    /// Move a toy that is not in the goose's beak (remote control). `Unsupported` means it is
+    /// gone or being carried.
+    pub fn move_toy(&mut self, id: ToyId, point: Vec2) -> PokeOutcome {
+        if let Some(outcome) = self.remote_gate() {
+            return outcome;
+        }
+        let position = self.layout.clamp_point(point);
+        if self.toys.move_toy(id, position) {
+            PokeOutcome::Applied
+        } else {
+            PokeOutcome::Unsupported
+        }
+    }
+
+    /// The live remote-control toys (for the renderer and status).
+    pub fn toys(&self) -> &ToyState {
+        &self.toys
+    }
+
+    /// Current body position in desktop coordinates (for remote status).
+    pub fn goose_position(&self) -> Vec2 {
+        self.goose.position
+    }
+
+    fn remote_blocked(&self) -> bool {
+        self.graceful_exit_requested() || self.permission_waiting()
+    }
+
+    fn remote_gate(&self) -> Option<PokeOutcome> {
+        if self.remote_blocked() {
+            Some(PokeOutcome::Busy)
+        } else if self.manners_active() {
+            Some(PokeOutcome::Quiet)
+        } else {
+            None
         }
     }
 
@@ -749,6 +842,9 @@ impl World {
                 let pos = pile.position + leaf.screen_offset() * spawn;
                 add(Rect::new(pos, pos).grow(LEAF_RENDER_RADIUS));
             }
+        }
+        for toy in self.toys.toys() {
+            add(Rect::new(toy.position, toy.position).grow(TOY_RENDER_RADIUS));
         }
         rect.map(Rect::pixel_aligned)
     }
@@ -989,6 +1085,7 @@ impl World {
         self.goose.track_mud_end_time = self.elapsed;
         self.goose.foot_marks = Default::default();
         self.autumn.clear();
+        self.toys.clear();
         self.current = Box::new(GracefulExitTask::new());
     }
 
@@ -1197,6 +1294,7 @@ impl World {
                 calm,
                 timing: self.options.timing,
                 autumn_piles: &autumn_targets,
+                toys: &mut self.toys,
             };
             self.current.run(&mut self.goose, &mut ctx)
         };
@@ -1346,6 +1444,21 @@ impl World {
         if had_autumn_pickable != self.autumn_pickable() {
             self.refresh_schedule_state();
             self.rebuild_pickable();
+        }
+
+        if self.current.id() != "toy_play" {
+            self.toys.release_all();
+        }
+        self.toys.tick(self.elapsed, &self.layout, &self.goose);
+        // Now and then a wandering goose goes back to a toy that is lying around.
+        if !self.toys.is_empty()
+            && self.current.id() == "wander"
+            && !lifecycle_exiting
+            && !permission_waiting
+            && !self.manners_active()
+            && self.rng.next_f64() < TOY_IDLE_PLAY_CHANCE
+        {
+            self.current = Box::new(ToyPlayTask::new());
         }
     }
 
@@ -4366,6 +4479,144 @@ mod tests {
         assert!(
             (rate - USER_CLOSE_REACTION_PROBABILITY).abs() <= 0.02,
             "observed reaction rate {rate:.4}"
+        );
+    }
+
+    #[test]
+    fn remote_walk_to_clamps_arrives_lingers_and_returns_to_the_deck() {
+        let mut w = World::new(bounds(), 901);
+        while w.current_task() == "first_ux" {
+            w.tick();
+        }
+        assert_eq!(w.walk_to(Vec2::new(-5_000.0, 200.0)), PokeOutcome::Applied);
+        assert_eq!(w.current_task(), "walk_to");
+        let mut arrived = false;
+        for _ in 0..(120 * 30) {
+            w.tick();
+            if w.current_task() != "walk_to" {
+                break;
+            }
+            arrived |= w.layout().contains(w.goose_position())
+                && (w.goose_position().y - 200.0).abs() < 8.0;
+        }
+        assert!(arrived, "the clamped target stays on a real monitor");
+        assert_ne!(w.current_task(), "walk_to", "the walk ends after its dwell");
+    }
+
+    #[test]
+    fn remote_requests_respect_manners_while_local_pokes_keep_their_gates() {
+        let mut w = World::new(bounds(), 902);
+        w.set_presence(PresenceSnapshot::do_not_disturb());
+        assert!(w.manners_active());
+        assert_eq!(w.remote_poke(PokeAction::Honk), PokeOutcome::Quiet);
+        assert_eq!(w.remote_poke(PokeAction::Mud), PokeOutcome::Quiet);
+        assert_eq!(w.walk_to(Vec2::new(10.0, 10.0)), PokeOutcome::Quiet);
+        assert_eq!(
+            w.place_toy(ToyKind::Ball, Vec2::new(10.0, 10.0)),
+            Err(PokeOutcome::Quiet)
+        );
+        assert_eq!(w.remote_poke(PokeAction::Wander), PokeOutcome::Applied);
+        assert_eq!(w.poke(PokeAction::Honk), PokeOutcome::Applied);
+
+        w.set_presence(PresenceSnapshot::default());
+        assert_eq!(w.remote_poke(PokeAction::Honk), PokeOutcome::Applied);
+        w.request_graceful_exit();
+        assert_eq!(w.walk_to(Vec2::new(10.0, 10.0)), PokeOutcome::Busy);
+        assert!(w.toys().is_empty());
+    }
+
+    fn settled(seed: u64) -> World {
+        let mut w = World::new(bounds(), seed);
+        while w.current_task() == "first_ux" {
+            w.tick();
+        }
+        w
+    }
+
+    #[test]
+    fn placing_a_ball_sends_the_goose_to_kick_it() {
+        let mut w = settled(903);
+        let id = w.place_toy(ToyKind::Ball, Vec2::new(400.0, 400.0)).unwrap();
+        assert_eq!(w.current_task(), "toy_play");
+        let mut kicked = false;
+        for _ in 0..(120 * 15) {
+            w.tick();
+            kicked |= w
+                .toys()
+                .get(id)
+                .is_some_and(|toy| toy.last_kicked.is_some());
+            if kicked {
+                break;
+            }
+        }
+        assert!(kicked);
+        assert!(w.layout().contains(w.toys().get(id).unwrap().position));
+    }
+
+    #[test]
+    fn the_goose_eats_crumbs() {
+        let mut w = settled(904);
+        let id = w
+            .place_toy(ToyKind::Crumbs, Vec2::new(300.0, 350.0))
+            .unwrap();
+        for _ in 0..(120 * 15) {
+            w.tick();
+            if w.toys().get(id).is_none() {
+                break;
+            }
+        }
+        assert!(w.toys().get(id).is_none(), "crumbs were eaten");
+    }
+
+    #[test]
+    fn the_goose_fetches_a_stick_back_to_the_pointer() {
+        let mut w = settled(905);
+        let pointer = Vec2::new(150.0, 150.0);
+        w.set_pointer(Pointer {
+            pos: pointer,
+            present: true,
+            left_down: false,
+        });
+        let id = w
+            .place_toy(ToyKind::Stick, Vec2::new(600.0, 450.0))
+            .unwrap();
+        let mut carried = false;
+        for _ in 0..(120 * 20) {
+            w.tick();
+            let toy = *w.toys().get(id).unwrap();
+            carried |= toy.carried;
+            if carried && !toy.carried {
+                break;
+            }
+        }
+        let toy = *w.toys().get(id).unwrap();
+        assert!(carried, "the goose picked the stick up");
+        assert!(!toy.carried, "and dropped it again");
+        assert!(
+            Vec2::distance(toy.position, pointer) < 80.0,
+            "near the pointer"
+        );
+        assert!(!w.move_toy(ToyId(9_999), pointer).eq(&PokeOutcome::Applied));
+    }
+
+    #[test]
+    fn toys_are_bounded_and_movable_until_carried() {
+        let mut w = settled(906);
+        let id = w
+            .place_toy(ToyKind::Ball, Vec2::new(-500.0, 100.0))
+            .unwrap();
+        assert!(w.layout().contains(w.toys().get(id).unwrap().position));
+        assert_eq!(
+            w.move_toy(id, Vec2::new(500.0, 400.0)),
+            PokeOutcome::Applied
+        );
+        for _ in 1..crate::toys::MAX_TOYS {
+            w.place_toy(ToyKind::Crumbs, Vec2::new(100.0, 100.0))
+                .unwrap();
+        }
+        assert_eq!(
+            w.place_toy(ToyKind::Stick, Vec2::new(100.0, 100.0)),
+            Err(PokeOutcome::Busy)
         );
     }
 }

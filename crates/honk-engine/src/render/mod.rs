@@ -7,11 +7,13 @@ mod leaf_art;
 mod leaves;
 mod projected;
 mod svg;
+mod toys;
 
 use crate::autumn::{AutumnLeafColor, AutumnState};
 use crate::footmarks::{FootMarkTiming, FootMarks};
 use crate::math::Vec2;
 use crate::rig::{GoosePose, Rig};
+use crate::toys::ToyState;
 pub use canvas::DamageCanvas;
 use geom::{disc, ellipse, paint};
 use std::cell::RefCell;
@@ -104,6 +106,22 @@ fn leaf_palette_index(color: AutumnLeafColor) -> usize {
         AutumnLeafColor::Orange => 1,
         AutumnLeafColor::Red => 2,
         AutumnLeafColor::Brown => 3,
+    }
+}
+
+/// Render remote-control toys. Toys on the ground go in `BelowGoose`; a toy in the goose's beak
+/// goes in `AboveGoose`.
+pub fn render_toys(
+    pixmap: &mut Pixmap,
+    toys: &ToyState,
+    now: f64,
+    origin: Vec2,
+    layer: AutumnRenderLayer,
+) {
+    for toy in toys.toys() {
+        if toy.carried == (layer == AutumnRenderLayer::AboveGoose) {
+            toys::render(pixmap, toy, now, origin);
+        }
     }
 }
 
@@ -559,6 +577,47 @@ mod tests {
         render_sleepies(&mut pixmap, &z, 0.0, Vec2::ZERO);
         let opaque = pixmap.data().chunks_exact(4).filter(|px| px[3] > 0).count();
         assert!(opaque > 5, "expected a visible Z particle");
+    }
+
+    #[test]
+    fn toy_play_renders_every_damaged_frame_like_the_runtime() {
+        use crate::toys::ToyKind;
+        use crate::world::World;
+
+        let mut world = World::new(
+            crate::math::Rect::new(Vec2::ZERO, Vec2::new(1280.0, 720.0)),
+            907,
+        );
+        while world.current_task() == "first_ux" {
+            world.tick();
+        }
+        world
+            .place_toy(ToyKind::Ball, Vec2::new(640.0, 360.0))
+            .unwrap();
+        world
+            .place_toy(ToyKind::Crumbs, Vec2::new(200.0, 500.0))
+            .unwrap();
+        world
+            .place_toy(ToyKind::Stick, Vec2::new(1000.0, 200.0))
+            .unwrap();
+        let mut drawn_carried = false;
+        for frame in 0..(120 * 30) {
+            world.tick();
+            if frame % 2 != 0 {
+                continue;
+            }
+            let Some(dirty) = world.visual_bounds() else {
+                continue;
+            };
+            let width = dirty.width().ceil().max(1.0) as u32;
+            let height = dirty.height().ceil().max(1.0) as u32;
+            let mut canvas = Pixmap::new(width, height).expect("bounded damage canvas");
+            for layer in [AutumnRenderLayer::BelowGoose, AutumnRenderLayer::AboveGoose] {
+                render_toys(&mut canvas, world.toys(), world.now(), dirty.min, layer);
+            }
+            drawn_carried |= world.toys().toys().iter().any(|toy| toy.carried);
+        }
+        assert!(drawn_carried, "the fetched stick was drawn in the beak");
     }
 
     #[test]

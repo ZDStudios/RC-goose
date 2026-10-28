@@ -7,6 +7,13 @@ features and installation, and [readiness records](docs/readiness/) for release 
 
 ## [Unreleased]
 
+### Added
+- Add opt-in remote control (ADR 0059): a `[remote]` config section (default off; `enabled`, `relay_url`, `token`, `device_name`), a Windows runtime client that keeps one outbound rustls WebSocket to a self-hosted relay with bounded reconnect backoff, and a Node relay plus single-page control panel under `relay/` with a Dockerfile for Coolify. Relay commands are translated into local IPC exactly like the CLI.
+- Add backward-compatible `HONK300/1` frames `RDO`, `WALK_TO`, `TOY_PLACE`, `TOY_MOVE`, `SNAPSHOT` and `TOYS`, the engine `WalkToTask`, and remote-control toys: a ball the goose kicks, a stick it fetches back to the pointer and bread crumbs it eats (`ToyState`, `ToyPlayTask`, at most five, three-minute lifetime). Toy art is the Desktop Goose v0.31 ToysMod and BreadCrumbs images, bundled under `Assets/Toys/` as personal-use compatibility assets.
+
+### Security
+- Gate remote mischief on schedule/presence manners (`QUIET`), keep `FORCE_STOP`/reload/update/config unreachable from the relay, require `wss://` except for loopback, start remote control only when the Windows tray exists, and show its state in the tooltip and menu with a one-time connect notification and a Disconnect item. An invalid `[remote]` section disables only remote control.
+
 ## [1.11.3] - 2026-10-20
 
 ### Fixed

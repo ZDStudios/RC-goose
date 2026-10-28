@@ -1,6 +1,8 @@
 use honk_config::{Config, ConfigError, ConfigSnapshot};
-use honk_control::ControlCommand;
-use honk_engine::{Accumulator, Clock, Rect, World};
+use honk_control::{
+    ControlCommand, ControlResponse, RemoteSnapshot, ToyPosition, MAX_REPORTED_TOYS,
+};
+use honk_engine::{Accumulator, Clock, PokeOutcome, Rect, ToyId, Vec2, World};
 use std::time::Duration;
 
 const PRESENT_INTERVAL: f64 = 1.0 / 60.0;
@@ -159,6 +161,53 @@ impl RuntimeCore {
     pub(crate) fn defer_present(&mut self) {
         assert!(self.pending_visual_bounds.take().is_some());
         self.pending_present_time = None;
+    }
+
+    /// Answer the remote-control IPC commands (ADR 0059) identically on every platform. Every
+    /// mutation goes through the engine's manners-aware remote entry points.
+    pub(crate) fn remote_response(world: &mut World, command: ControlCommand) -> ControlResponse {
+        let point = |x: i32, y: i32| Vec2::new(x as f32, y as f32);
+        match command {
+            ControlCommand::RemoteDo(action) => world.remote_poke(action).into(),
+            ControlCommand::WalkTo(x, y) => world.walk_to(point(x, y)).into(),
+            ControlCommand::ToyPlace(kind, x, y) => match world.place_toy(kind, point(x, y)) {
+                Ok(id) => ControlResponse::Toy(id.0),
+                Err(outcome) => outcome.into(),
+            },
+            ControlCommand::ToyMove(id, x, y) => match world.move_toy(ToyId(id), point(x, y)) {
+                PokeOutcome::Unsupported => ControlResponse::Err("GONE".into()),
+                outcome => outcome.into(),
+            },
+            ControlCommand::Snapshot => {
+                let bounds = world.layout().bounds();
+                let position = world.goose_position();
+                ControlResponse::Snapshot(RemoteSnapshot {
+                    task: world.current_task().to_string(),
+                    x: position.x.round() as i32,
+                    y: position.y.round() as i32,
+                    left: bounds.min.x.round() as i32,
+                    top: bounds.min.y.round() as i32,
+                    width: (bounds.max.x - bounds.min.x).round().max(0.0) as u32,
+                    height: (bounds.max.y - bounds.min.y).round().max(0.0) as u32,
+                    quiet: world.manners_active(),
+                })
+            }
+            ControlCommand::Toys => ControlResponse::Toys(
+                world
+                    .toys()
+                    .toys()
+                    .iter()
+                    .take(MAX_REPORTED_TOYS)
+                    .map(|toy| ToyPosition {
+                        id: toy.id.0,
+                        kind: toy.kind,
+                        x: toy.position.x.round() as i32,
+                        y: toy.position.y.round() as i32,
+                    })
+                    .collect(),
+            ),
+            _ => ControlResponse::Err("UNSUPPORTED".into()),
+        }
     }
 
     pub(crate) fn load_reload_config(

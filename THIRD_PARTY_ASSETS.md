@@ -9,6 +9,11 @@ The following directories contain screened compatibility media retained at the p
 - `Assets/Sounds/`
 - `Assets/Images/Memes/originals/`
 - `Assets/Text/NotepadMessages/originals/`
+- `Assets/Toys/` and its panel copies in `relay/public/toys/`
+
+`Assets/Toys/ball*.png` and `stick*.png` come from the community ToysMod v1.1 for Desktop Goose,
+and `Assets/Toys/crumbs.png` from the community BreadCrumbs mod, both as shipped in the operator's
+Desktop Goose v0.31 folder. Only these images are used. No mod code, DLLs or sounds are included.
 
 Those files remain copyright their respective owners. honk300 does not assert ownership of them or grant redistribution, commercial-use, trademark, publicity, or other rights beyond rights the recipient already has. Anyone redistributing a build is responsible for confirming permission or replacing/removing these files.
 

@@ -157,6 +157,10 @@ the readiness records.
   terminal-backed Update action, and engine-owned graceful Quit. Opening a menu performs no
   network check. The GUI edits the existing versioned configuration through Rust; it has no separate updater or lifecycle owner. There is no global quit key; an unavailable shell
   host is non-fatal and does not change overlay or mischief capability claims.
+- Remote control (ADR 0059) is opt-in through `[remote]`, default off, outbound-only WSS to a
+  self-hosted relay (`relay/`). Relay commands become existing local IPC frames; remote mischief
+  respects manners, `FORCE_STOP`/reload/update/config stay unreachable, and the client runs only
+  while a tray indicator with a Disconnect item is present (Windows today).
 - Terminal windows are protected: the goose may visually overlay them, but must never move,
   focus, type into, drag, ride, collect, or otherwise manipulate terminal windows, including in
   spicy/default-off modes. Conservatively treat Codex and Visual Studio Code surfaces as terminal

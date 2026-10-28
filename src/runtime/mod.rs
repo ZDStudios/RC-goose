@@ -4,6 +4,9 @@ pub mod windows;
 #[cfg(windows)]
 mod windows_profile;
 
+#[cfg(windows)]
+pub(crate) mod remote;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 

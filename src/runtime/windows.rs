@@ -2,16 +2,17 @@ use crate::assets;
 use crate::audio;
 use crate::runtime::control_surface;
 use crate::runtime::core::RuntimeCore;
+use crate::runtime::remote::RemoteSlot;
 use crate::runtime::{audio_probe_capability, RuntimeOptions};
 use honk_config::{BackendCapability, BackendState, Config, EffectiveOptions};
 use honk_control::{
-    BundleStatus, CapabilityStatus, CommandServer, ControlCommand, ControlResponse, PlatformStatus,
-    RuntimeStatus,
+    BundleStatus, CapabilityStatus, CommandServer, ControlCommand, ControlResponse,
+    ControlSurfaceCommand, PlatformStatus, RuntimeStatus,
 };
 use honk_engine::render::DamageCanvas;
 use honk_engine::render::{
     render_autumn_leaves, render_footmarks_with_timing, render_hearts, render_pose_with_palette,
-    render_sleepies, AutumnRenderLayer,
+    render_sleepies, render_toys, AutumnRenderLayer,
 };
 use honk_engine::{
     collect_window::fitted_collect_image_size, CollectWindowCommand, CollectWindowId,
@@ -142,6 +143,15 @@ pub fn run(
 
     println!("honk300: a goose is loose on your desktop. Use `honk300 stop` to send it home.");
 
+    // Opt-in remote control (ADR 0059). It only starts after the tray exists so a connection is
+    // never invisible; without a tray it stays off.
+    let mut remote = RemoteSlot::default();
+    if status_tray.is_some() {
+        remote.sync(&config.remote);
+    } else if config.remote.enabled {
+        eprintln!("honk300: remote control stays off because the tray indicator is unavailable.");
+    }
+
     loop {
         if !overlay.pump() {
             break;
@@ -157,7 +167,14 @@ pub fn run(
             );
             status_tray = None;
         }
+        if let Some(tray) = status_tray.as_mut() {
+            tray.set_remote_indicator(remote.indicator(), remote.relay_host());
+        }
         while let Some(command) = status_tray.as_ref().and_then(StatusTray::take_command) {
+            if command == ControlSurfaceCommand::DisconnectRemote {
+                remote.disconnect();
+                continue;
+            }
             let action = control_surface::command_name(command);
             if let Err(error) = control_surface::handle_command(
                 command,
@@ -295,6 +312,9 @@ pub fn run(
                                 audio_capability = audio_probe_capability(audio.is_some());
                             }
                             world.apply_options(effective.world);
+                            if status_tray.is_some() {
+                                remote.sync(&config.remote);
+                            }
                             println!("honk300: reload command applied.");
                             ControlResponse::Ok
                         }
@@ -309,6 +329,15 @@ pub fn run(
                     let outcome = world.poke(action);
                     println!("honk300: do {action:?} -> {outcome:?}");
                     request.respond(outcome.into());
+                }
+                ControlCommand::RemoteDo(_)
+                | ControlCommand::WalkTo(..)
+                | ControlCommand::ToyPlace(..)
+                | ControlCommand::ToyMove(..)
+                | ControlCommand::Snapshot
+                | ControlCommand::Toys => {
+                    let response = RuntimeCore::remote_response(&mut world, request.command());
+                    request.respond(response);
                 }
                 ControlCommand::Status => {
                     request.respond(ControlResponse::Status(runtime_status(
@@ -572,6 +601,13 @@ pub fn run(
                 world.goose.position,
                 AutumnRenderLayer::BelowGoose,
             );
+            render_toys(
+                canvas,
+                world.toys(),
+                world.now(),
+                origin,
+                AutumnRenderLayer::BelowGoose,
+            );
             render_pose_with_palette(canvas, world.pose(), origin, world.render_palette());
             render_autumn_leaves(
                 canvas,
@@ -579,6 +615,13 @@ pub fn run(
                 world.now(),
                 origin,
                 world.goose.position,
+                AutumnRenderLayer::AboveGoose,
+            );
+            render_toys(
+                canvas,
+                world.toys(),
+                world.now(),
+                origin,
                 AutumnRenderLayer::AboveGoose,
             );
             render_hearts(canvas, world.hearts(), world.now(), origin);

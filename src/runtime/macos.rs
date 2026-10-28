@@ -14,7 +14,7 @@ use honk_control::{
 use honk_engine::render::DamageCanvas;
 use honk_engine::render::{
     render_autumn_leaves, render_footmarks_with_timing, render_hearts,
-    render_pose_with_palette_at_scale, render_sleepies, AutumnRenderLayer,
+    render_pose_with_palette_at_scale, render_sleepies, render_toys, AutumnRenderLayer,
 };
 use honk_engine::{
     CollectWindowCommand, CollectWindowPayload, CursorCommand, DesktopLayout, Pointer,
@@ -278,6 +278,15 @@ pub fn run(
                     println!("honk300: do {action:?} -> {outcome:?}");
                     request.respond(outcome.into());
                 }
+                ControlCommand::RemoteDo(_)
+                | ControlCommand::WalkTo(..)
+                | ControlCommand::ToyPlace(..)
+                | ControlCommand::ToyMove(..)
+                | ControlCommand::Snapshot
+                | ControlCommand::Toys => {
+                    let response = RuntimeCore::remote_response(&mut world, request.command());
+                    request.respond(response);
+                }
                 ControlCommand::Status => {
                     request.respond(ControlResponse::Status(runtime_status(
                         cursor_warp,
@@ -540,6 +549,13 @@ pub fn run(
                 world.goose.position,
                 AutumnRenderLayer::BelowGoose,
             );
+            render_toys(
+                canvas,
+                world.toys(),
+                world.now(),
+                origin,
+                AutumnRenderLayer::BelowGoose,
+            );
             render_pose_with_palette_at_scale(
                 canvas,
                 world.pose(),
@@ -553,6 +569,13 @@ pub fn run(
                 world.now(),
                 origin,
                 world.goose.position,
+                AutumnRenderLayer::AboveGoose,
+            );
+            render_toys(
+                canvas,
+                world.toys(),
+                world.now(),
+                origin,
                 AutumnRenderLayer::AboveGoose,
             );
             render_hearts(canvas, world.hearts(), world.now(), origin);
