@@ -21,8 +21,8 @@ pub use platform::{
     SingletonStatus, UpdateGuard,
 };
 pub use protocol::{
-    BundleStatus, CapabilityStatus, ControlCommand, ControlResponse, LeafPosition, PlatformStatus,
-    ProtocolError, RemoteSnapshot, RuntimeStatus, MAX_REPORTED_LEAVES,
+    BundleStatus, CapabilityStatus, ControlCommand, ControlResponse, PlatformStatus, ProtocolError,
+    RemoteSnapshot, RuntimeStatus, ToyPosition, MAX_REPORTED_TOYS,
 };
 
 /// A user action emitted by an operating-system control surface.

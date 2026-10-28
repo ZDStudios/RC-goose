@@ -12,7 +12,7 @@ use honk_control::{
 use honk_engine::render::DamageCanvas;
 use honk_engine::render::{
     render_autumn_leaves, render_footmarks_with_timing, render_hearts, render_pose_with_palette,
-    render_sleepies, AutumnRenderLayer,
+    render_sleepies, render_toys, AutumnRenderLayer,
 };
 use honk_engine::{
     CollectWindowCommand, CursorCommand, DesktopLayout, PresenceSnapshot, Rect, Sound, World,
@@ -450,10 +450,10 @@ pub fn run(
                 }
                 ControlCommand::RemoteDo(_)
                 | ControlCommand::WalkTo(..)
-                | ControlCommand::LeafPlace(..)
-                | ControlCommand::LeafMove(..)
+                | ControlCommand::ToyPlace(..)
+                | ControlCommand::ToyMove(..)
                 | ControlCommand::Snapshot
-                | ControlCommand::Leaves => {
+                | ControlCommand::Toys => {
                     let response = RuntimeCore::remote_response(&mut world, request.command());
                     request.respond(response);
                 }
@@ -738,6 +738,13 @@ pub fn run(
                 world.goose.position,
                 AutumnRenderLayer::BelowGoose,
             );
+            render_toys(
+                canvas,
+                world.toys(),
+                world.now(),
+                origin,
+                AutumnRenderLayer::BelowGoose,
+            );
             render_pose_with_palette(canvas, world.pose(), origin, world.render_palette());
             render_autumn_leaves(
                 canvas,
@@ -745,6 +752,13 @@ pub fn run(
                 world.now(),
                 origin,
                 world.goose.position,
+                AutumnRenderLayer::AboveGoose,
+            );
+            render_toys(
+                canvas,
+                world.toys(),
+                world.now(),
+                origin,
                 AutumnRenderLayer::AboveGoose,
             );
             render_hearts(canvas, world.hearts(), world.now(), origin);

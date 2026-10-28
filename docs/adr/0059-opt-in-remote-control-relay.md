@@ -26,7 +26,7 @@ Add three parts, all opt-in and off by default:
    is translated into the local IPC protocol and sent through `honk_control::send_command`,
    exactly like the CLI, so the runtime loop and engine gates stay authoritative.
 3. **Panel** (`relay/public/index.html`). Goose list with live status, action buttons, and a
-   mini screen map for walk-to and leaf-pile placement and movement.
+   mini screen map for walk-to and placing and dragging toys.
 
 ### Local IPC additions (`HONK300/1`, backward compatible)
 
@@ -34,10 +34,10 @@ Add three parts, all opt-in and off by default:
 | --- | --- | --- |
 | `RDO <ACTION>` | `OK` / `ERR BUSY|UNSUPPORTED|QUIET` | `World::remote_poke` |
 | `WALK_TO x y` | `OK` / `ERR …` | `World::walk_to` (`WalkToTask`) |
-| `LEAF_PLACE x y` | `LEAF <id>` / `ERR …` | `World::place_leaves` |
-| `LEAF_MOVE id x y` | `OK` / `ERR GONE|…` | `World::move_leaves` |
+| `TOY_PLACE B|S|C x y` | `TOY <id>` / `ERR …` | `World::place_toy` (`ToyPlayTask`) |
+| `TOY_MOVE id x y` | `OK` / `ERR GONE|…` | `World::move_toy` |
 | `SNAPSHOT` | `SNAP T= X= Y= L= U= W= H= Q=` | read-only |
-| `LEAVES` | `LEAVES id:x,y …` (≤ 6) | read-only |
+| `TOYS` | `TOYS id:K:x,y …` (≤ 5) | read-only |
 
 Existing frames, responses and local `DO` semantics are unchanged. All new frames fit the
 128-byte frame limit; coordinates are signed desktop pixels.
@@ -49,7 +49,7 @@ Existing frames, responses and local `DO` semantics are unchanged. All new frame
   existing gates.
 - Remote actions reuse existing engine actions (honk, mud, meme, note, nab, wander), so
   configuration gates, collect-window ownership and terminal protection still apply. Walk-to
-  and leaf placement are clamped into real monitors and never move, focus or type into any
+  and toy placement are clamped into real monitors and never move, focus or type into any
   foreign window.
 - `walk_off` maps only to graceful `STOP`; `FORCE_STOP`, reload, install, update and
   configuration are unreachable from the relay.
@@ -59,8 +59,14 @@ Existing frames, responses and local `DO` semantics are unchanged. All new frame
   tray tooltip, a status line in the menu and a **Disconnect remote control** item are always
   present; connecting raises a one-time notification. Disconnect ends the connection for the
   session until the `[remote]` settings change (reload) or the goose restarts.
-- Leaf piles placed remotely last 120 s, survive while the Autumn season is off, and share the
-  existing six-pile cap. Only placed, unkicked piles can be moved.
+- Toys (ball, stick, bread crumbs) are engine-owned, bounded to five, clamped into real
+  monitors, and fade after three minutes. A ball rolls and bounces when the goose runs into it;
+  the goose fetches a stick back to the pointer (only its own beak carries it) and eats crumbs.
+  Placing a toy redirects only a wandering, playing or walking goose. Wandering geese return to
+  toys occasionally, never while manners are active. Seasonal Autumn leaves are unchanged.
+- Toy art is the Desktop Goose v0.31 ToysMod (ball, stick) and BreadCrumbs (crumbs) images,
+  bundled as personal-use compatibility assets under `Assets/Toys/` and `relay/public/toys/`
+  and listed in `THIRD_PARTY_ASSETS.md`. No mod code is used.
 
 ### Platform scope
 
@@ -78,7 +84,8 @@ release artifacts.
 
 ## Qualification
 
-- Engine: walk-to clamping/dwell, manners gating, placed-pile survival/movement/cap, kicking.
+- Engine: walk-to clamping/dwell, manners gating, toy cap/clamping/movement, ball kick physics,
+  stick fetch to the pointer, eating crumbs, and frame-by-frame toy rendering.
 - IPC: round-trips, malformed frames, frame-limit bounds for every new response.
 - Config: default off, URL/token/name validation, untouched configs gain no `[remote]` table.
 - Client: command mapping, refusal of unknown/malformed commands, Disconnect lifecycle.

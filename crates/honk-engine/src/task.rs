@@ -25,6 +25,7 @@ use crate::layout::{DesktopLayout, ExposedEdge};
 use crate::math::{Rect, Vec2};
 use crate::rng::{RandomSource, SplitMix64};
 use crate::sound::Sound;
+use crate::toys::{ToyId, ToyKind, ToyState};
 
 /// Verified wander timings (`config.ini`): seconds. Config-driven values arrive with the
 /// TOML loader in a later round; these are the defaults.
@@ -89,6 +90,8 @@ pub struct TaskCtx<'a> {
     pub timing: TimingOptions,
     /// Built-in Autumn leaf piles currently available as task targets.
     pub autumn_piles: &'a [AutumnPileTarget],
+    /// Remote-control toys; only the toy-play task changes them.
+    pub toys: &'a mut ToyState,
 }
 
 /// A goose behavior. Tasks set targets/params only; locomotion is the engine's job.
@@ -300,6 +303,112 @@ impl Task for WalkToTask {
         }
         self.arrived_at
             .is_some_and(|at| ctx.now - at >= WALK_TO_DWELL)
+    }
+}
+
+/// Give up on a toy errand that cannot finish (unreachable toy, pointer far away).
+pub const TOY_PLAY_TIMEOUT: f64 = 20.0;
+const TOY_BEAK_REACH: f32 = 22.0;
+
+/// Plays with one remote-control toy: kick a ball, fetch a stick back to the pointer, or eat
+/// crumbs. Movement only; the toy physics live in [`ToyState`].
+#[derive(Default)]
+pub struct ToyPlayTask {
+    target: Option<ToyId>,
+    started: Option<f64>,
+    return_to: Option<Vec2>,
+}
+
+impl ToyPlayTask {
+    /// Play with whichever toy is available when the task starts.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Go straight for one toy (a freshly placed one).
+    pub fn targeting(id: ToyId) -> Self {
+        Self {
+            target: Some(id),
+            ..Self::default()
+        }
+    }
+}
+
+impl Task for ToyPlayTask {
+    fn id(&self) -> &'static str {
+        "toy_play"
+    }
+
+    fn run(&mut self, goose: &mut GooseEntity, ctx: &mut TaskCtx) -> bool {
+        let started = *self.started.get_or_insert(ctx.now);
+        if ctx.now - started > TOY_PLAY_TIMEOUT {
+            ctx.toys.release_all();
+            return true;
+        }
+        let id = match self.target {
+            Some(id) => id,
+            None => {
+                let free: Vec<ToyId> = ctx
+                    .toys
+                    .toys()
+                    .iter()
+                    .filter(|toy| !toy.carried)
+                    .map(|toy| toy.id)
+                    .collect();
+                if free.is_empty() {
+                    return true;
+                }
+                let index = (ctx.rng.next_f64() * free.len() as f64) as usize;
+                let id = free[index.min(free.len() - 1)];
+                self.target = Some(id);
+                id
+            }
+        };
+        let Some(toy) = ctx.toys.get(id).copied() else {
+            return true;
+        };
+        goose.current_speed = goose.parameters.run_speed;
+        goose.current_acceleration = goose.parameters.acceleration_normal;
+        match toy.kind {
+            ToyKind::Ball => {
+                if toy.last_kicked.is_some_and(|at| at >= started) {
+                    return true;
+                }
+                // Aim a little past the ball so the goose runs through it.
+                let through = (toy.position - goose.position).normalize() * 40.0;
+                goose.target_pos = ctx.layout.clamp_point(toy.position + through);
+                false
+            }
+            ToyKind::Crumbs => {
+                goose.target_pos = beak_locomotion_target(goose, toy.position);
+                if Vec2::distance(goose.rig.beak_tip, toy.position) < TOY_BEAK_REACH {
+                    ctx.toys.remove(id);
+                    return true;
+                }
+                false
+            }
+            ToyKind::Stick if !toy.carried => {
+                goose.target_pos = beak_locomotion_target(goose, toy.position);
+                if Vec2::distance(goose.rig.beak_tip, toy.position) < TOY_BEAK_REACH {
+                    ctx.toys.pick_up(id);
+                    self.return_to = Some(if ctx.pointer.present {
+                        ctx.layout.clamp_point(ctx.pointer.pos)
+                    } else {
+                        random_point(ctx)
+                    });
+                }
+                false
+            }
+            ToyKind::Stick => {
+                let destination = *self.return_to.get_or_insert(goose.position);
+                goose.target_pos = beak_locomotion_target(goose, destination);
+                if Vec2::distance(goose.rig.beak_tip, destination) < TOY_BEAK_REACH * 2.0 {
+                    ctx.toys.drop_toy(id, goose.rig.beak_tip);
+                    return true;
+                }
+                false
+            }
+        }
     }
 }
 
@@ -1293,6 +1402,7 @@ mod tests {
             calm: false,
             timing: TimingOptions::default(),
             autumn_piles: &[],
+            toys: Box::leak(Box::new(ToyState::new())),
         }
     }
 

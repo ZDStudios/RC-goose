@@ -81,11 +81,12 @@ test("panel sees geese join, report status, and leave", async () => {
   assert.equal(joined.geese[0].name, "office-pc");
 
   g.send({ type: "status", online: true, action: "wander", x: 5, y: 6, quiet: false,
-    screen: { x: 0, y: 0, w: 1920, h: 1080 }, leaves: [{ id: 2, x: 1, y: 2 }, { id: "bad" }] });
+    screen: { x: 0, y: 0, w: 1920, h: 1080 },
+    toys: [{ id: 2, kind: "ball", x: 1, y: 2 }, { id: "bad" }, { id: 3, kind: "laser", x: 0, y: 0 }] });
   const status = await p.next((m) => m.type === "status");
   assert.equal(status.name, "office-pc");
   assert.equal(status.status.action, "wander");
-  assert.deepEqual(status.status.leaves, [{ id: 2, x: 1, y: 2 }]);
+  assert.deepEqual(status.status.toys, [{ id: 2, kind: "ball", x: 1, y: 2 }]);
 
   g.socket.close();
   const left = await p.next((m) => m.type === "geese" && m.geese.length === 0);
@@ -140,9 +141,32 @@ test("geese cannot send commands and panels cannot fake status", async () => {
   assert.equal(command.cmd, "honk");
 });
 
+test("toy commands carry their kind or id to the goose and results carry the toy id", async () => {
+  const p = await panel();
+  const g = await goose("toybox");
+  p.send({ type: "command", id: "t1", target: "toybox", cmd: "toy_place", kind: "stick", x: 5, y: 6 });
+  const command = await g.next((m) => m.type === "command");
+  assert.deepEqual(
+    { cmd: command.cmd, kind: command.kind, x: command.x, y: command.y },
+    { cmd: "toy_place", kind: "stick", x: 5, y: 6 },
+  );
+  g.send({ type: "result", id: command.id, ok: true, toy: 9 });
+  assert.equal((await p.next((m) => m.id === "t1")).toy, 9);
+});
+
+test("serves only the bundled toy images", async () => {
+  const origin = base.replace("ws://", "http://").replace("/ws", "");
+  const ball = await fetch(`${origin}/toys/ball.png`);
+  assert.equal(ball.status, 200);
+  assert.equal(ball.headers.get("content-type"), "image/png");
+  assert.equal((await fetch(`${origin}/toys/../server.js`)).status, 404);
+  assert.equal((await fetch(`${origin}/toys/laser.png`)).status, 404);
+});
+
 test("validateCommand covers every point command", () => {
-  assert.equal(validateCommand({ target: "a", cmd: "leaf_move", x: 1, y: 2 }), "bad_leaf");
-  assert.equal(validateCommand({ target: "a", cmd: "leaf_move", x: 1, y: 2, leaf: 3 }), null);
-  assert.equal(validateCommand({ target: "a b", cmd: "leaf_place", x: 1, y: 2 }), null);
+  assert.equal(validateCommand({ target: "a", cmd: "toy_move", x: 1, y: 2 }), "bad_toy");
+  assert.equal(validateCommand({ target: "a", cmd: "toy_move", x: 1, y: 2, toy: 3 }), null);
+  assert.equal(validateCommand({ target: "a b", cmd: "toy_place", kind: "ball", x: 1, y: 2 }), null);
+  assert.equal(validateCommand({ target: "a", cmd: "toy_place", kind: "laser", x: 1, y: 2 }), "bad_toy");
   assert.equal(validateCommand({ target: "", cmd: "honk" }), "bad_target");
 });

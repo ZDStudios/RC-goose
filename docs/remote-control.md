@@ -89,12 +89,15 @@ pick a goose. Each card shows whether it is in quiet mode, what it is doing and 
 - **Calm down**: cancel the current errand and wander. This is the only action allowed in quiet mode.
 - **Walk off (quit)**: the normal graceful walk-off. The app quits and cannot be restarted from
   the panel.
-- **Screen map**: *Walk here* sends the goose to the clicked point. *Drop leaves* places a leaf
-  pile (up to six; each lasts two minutes). *Move leaves* lets you drag a pile that hasn't been
-  kicked yet. Walking the goose through a pile kicks it.
+- **Screen map**: *Walk here* sends the goose to the clicked point. *Ball*, *Stick* and *Crumbs*
+  drop a toy where you click (up to five, each lasts three minutes), and the goose goes straight
+  for it: it kicks the ball across the screen, fetches the stick back to the mouse pointer, and
+  eats the crumbs. A wandering goose also goes back to toys lying around now and then.
+  *Move toy* lets you drag a toy, except while the goose is carrying it. The toy art comes from
+  the Desktop Goose v0.31 ToysMod and BreadCrumbs mods (credited in `THIRD_PARTY_ASSETS.md`).
 
 Errors are listed under *Activity*: `busy`, `turned off on this goose`, `quiet mode`,
-`those leaves are gone`, `goose is offline`, `no reply`.
+`that toy is gone or in the goose's beak`, `goose is offline`, `no reply`.
 
 ## Protocol
 
@@ -107,21 +110,21 @@ Every connection must send `hello` first (within 5 s), or it is closed.
 | goose → relay | `{"type":"hello","role":"goose","v":1,"token":"…","name":"Office PC","platform":"windows","version":"1.11.3"}` |
 | panel → relay | `{"type":"hello","role":"panel","v":1,"token":"…"}` |
 | relay → both | `{"type":"welcome","v":1}` or `{"type":"error","error":"unauthorized"}` and close `4401` |
-| goose → relay | `{"type":"status","online":true,"action":"wander","x":812,"y":604,"quiet":false,"screen":{"x":0,"y":0,"w":2560,"h":1440},"leaves":[{"id":3,"x":400,"y":300}]}` |
+| goose → relay | `{"type":"status","online":true,"action":"wander","x":812,"y":604,"quiet":false,"screen":{"x":0,"y":0,"w":2560,"h":1440},"toys":[{"id":3,"kind":"ball","x":400,"y":300}]}` |
 | relay → panel | `{"type":"geese","geese":[{"name":"Office PC","platform":"windows","version":"…","connectedAt":"…","status":{…}}]}` on join/leave |
 | relay → panel | `{"type":"status","name":"Office PC","status":{…}}` |
 | panel → relay | `{"type":"command","id":"p7","target":"Office PC","cmd":"walk_to","x":900,"y":500}` |
 | relay → goose | `{"type":"command","id":"r42","cmd":"walk_to","x":900,"y":500}` |
-| goose → relay | `{"type":"result","id":"r42","ok":true}`, `{"type":"result","id":"r43","ok":true,"leaf":5}` or `{"type":"result","id":"r44","ok":false,"error":"QUIET"}` |
+| goose → relay | `{"type":"result","id":"r42","ok":true}`, `{"type":"result","id":"r43","ok":true,"toy":5}` or `{"type":"result","id":"r44","ok":false,"error":"QUIET"}` |
 | relay → panel | `{"type":"result","id":"p7","target":"Office PC","ok":true}` |
 
 Commands: `honk`, `mud`, `meme`, `note`, `chase_cursor`, `wander`, `walk_to {x,y}`,
-`leaf_place {x,y}`, `leaf_move {leaf,x,y}`, `walk_off`. Coordinates are integer desktop
+`toy_place {kind,x,y}` (kind `ball`, `stick` or `crumbs`), `toy_move {toy,x,y}`, `walk_off`. Coordinates are integer desktop
 pixels in the frame reported by `status.screen` (they may be negative on multi-monitor setups).
 
 Errors from the goose: `BUSY`, `UNSUPPORTED`, `QUIET`, `GONE`, `NOT_RUNNING`, `BAD_POINT`,
-`BAD_LEAF`, `UNKNOWN_COMMAND`. From the relay: `offline`, `timeout` (10 s), `rate_limited`
-(more than 10 commands per second), `unknown_command`, `bad_target`, `bad_point`, `bad_leaf`.
+`BAD_TOY`, `UNKNOWN_COMMAND`. From the relay: `offline`, `timeout` (10 s), `rate_limited`
+(more than 10 commands per second), `unknown_command`, `bad_target`, `bad_point`, `bad_toy`.
 
 Limits: 8 KiB messages, 32 geese, 16 panels, names `^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$`. A goose
 that reconnects under the same name replaces its old connection (`4409`).
@@ -129,8 +132,8 @@ that reconnects under the same name replaces its old connection (`4409`).
 ### Local IPC (`HONK300/1`)
 
 The goose client translates relay commands into these local frames (see ADR 0059):
-`RDO HONK|MUD|MEME|NOTE|NAB|WANDER`, `WALK_TO x y`, `LEAF_PLACE x y`, `LEAF_MOVE id x y`,
-`SNAPSHOT`, `LEAVES`, and the existing `STOP` for `walk_off`.
+`RDO HONK|MUD|MEME|NOTE|NAB|WANDER`, `WALK_TO x y`, `TOY_PLACE B|S|C x y`, `TOY_MOVE id x y`,
+`SNAPSHOT`, `TOYS`, and the existing `STOP` for `walk_off`.
 
 ## Local testing
 

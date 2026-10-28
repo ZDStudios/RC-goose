@@ -1,7 +1,7 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use crate::{PresenceStatus, SessionStatus, WaylandStatus};
-use honk_engine::{PokeAction, PokeOutcome};
+use honk_engine::{PokeAction, PokeOutcome, ToyKind, MAX_TOYS};
 use std::error::Error;
 use std::fmt;
 
@@ -36,10 +36,10 @@ pub enum ControlCommand {
     /// schedule/presence manners, which local `DO` pokes deliberately do not.
     RemoteDo(PokeAction),
     WalkTo(i32, i32),
-    LeafPlace(i32, i32),
-    LeafMove(u64, i32, i32),
+    ToyPlace(ToyKind, i32, i32),
+    ToyMove(u64, i32, i32),
     Snapshot,
-    Leaves,
+    Toys,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,13 +50,13 @@ pub enum ControlResponse {
     Presence(PresenceStatus),
     Session(SessionStatus),
     Wayland(WaylandStatus),
-    Leaf(u64),
+    Toy(u64),
     Snapshot(RemoteSnapshot),
-    Leaves(Vec<LeafPosition>),
+    Toys(Vec<ToyPosition>),
 }
 
-/// Upper bound on leaf piles reported in one `LEAVES` frame; matches the engine pile cap.
-pub const MAX_REPORTED_LEAVES: usize = 6;
+/// Upper bound on toys reported in one `TOYS` frame; matches the engine toy cap.
+pub const MAX_REPORTED_TOYS: usize = MAX_TOYS;
 
 /// Compact live view of the goose for remote status reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,8 +72,9 @@ pub struct RemoteSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LeafPosition {
+pub struct ToyPosition {
     pub id: u64,
+    pub kind: ToyKind,
     pub x: i32,
     pub y: i32,
 }
@@ -181,10 +182,10 @@ impl ControlCommand {
             Self::Do(action) => format!("{VERSION} DO {}\n", encode_action(action)),
             Self::RemoteDo(action) => format!("{VERSION} RDO {}\n", encode_action(action)),
             Self::WalkTo(x, y) => format!("{VERSION} WALK_TO {x} {y}\n"),
-            Self::LeafPlace(x, y) => format!("{VERSION} LEAF_PLACE {x} {y}\n"),
-            Self::LeafMove(id, x, y) => format!("{VERSION} LEAF_MOVE {id} {x} {y}\n"),
+            Self::ToyPlace(kind, x, y) => format!("{VERSION} TOY_PLACE {} {x} {y}\n", kind.code()),
+            Self::ToyMove(id, x, y) => format!("{VERSION} TOY_MOVE {id} {x} {y}\n"),
             Self::Snapshot => format!("{VERSION} SNAPSHOT\n"),
-            Self::Leaves => format!("{VERSION} LEAVES\n"),
+            Self::Toys => format!("{VERSION} TOYS\n"),
         }
     }
 
@@ -274,29 +275,33 @@ impl ControlCommand {
                     Self::RemoteDo(action)
                 })
             }
-            "WALK_TO" | "LEAF_PLACE" => {
+            "WALK_TO" => {
                 let x = parse_number(parts.next())?;
                 let y = parse_number(parts.next())?;
                 ensure_end(parts)?;
-                Ok(if command == "WALK_TO" {
-                    Self::WalkTo(x, y)
-                } else {
-                    Self::LeafPlace(x, y)
-                })
+                Ok(Self::WalkTo(x, y))
             }
-            "LEAF_MOVE" => {
+            "TOY_PLACE" => {
+                let kind = parts.next().ok_or(ProtocolError::MissingAction)?;
+                let kind = ToyKind::from_code(kind).ok_or(ProtocolError::UnknownAction)?;
+                let x = parse_number(parts.next())?;
+                let y = parse_number(parts.next())?;
+                ensure_end(parts)?;
+                Ok(Self::ToyPlace(kind, x, y))
+            }
+            "TOY_MOVE" => {
                 let id = parse_number(parts.next())?;
                 let x = parse_number(parts.next())?;
                 let y = parse_number(parts.next())?;
                 ensure_end(parts)?;
-                Ok(Self::LeafMove(id, x, y))
+                Ok(Self::ToyMove(id, x, y))
             }
-            "SNAPSHOT" | "LEAVES" => {
+            "SNAPSHOT" | "TOYS" => {
                 ensure_end(parts)?;
                 Ok(if command == "SNAPSHOT" {
                     Self::Snapshot
                 } else {
-                    Self::Leaves
+                    Self::Toys
                 })
             }
             _ => Err(ProtocolError::UnknownCommand),
@@ -326,12 +331,18 @@ impl ControlResponse {
             Self::Presence(status) => status.encode(),
             Self::Session(session) => session.encode(),
             Self::Wayland(status) => status.encode(),
-            Self::Leaf(id) => format!("LEAF {id}\n"),
+            Self::Toy(id) => format!("TOY {id}\n"),
             Self::Snapshot(snapshot) => snapshot.encode(),
-            Self::Leaves(leaves) => {
-                let mut frame = String::from("LEAVES");
-                for leaf in leaves.iter().take(MAX_REPORTED_LEAVES) {
-                    frame.push_str(&format!(" {}:{},{}", leaf.id, leaf.x, leaf.y));
+            Self::Toys(toys) => {
+                let mut frame = String::from("TOYS");
+                for toy in toys.iter().take(MAX_REPORTED_TOYS) {
+                    frame.push_str(&format!(
+                        " {}:{}:{},{}",
+                        toy.id,
+                        toy.kind.code(),
+                        toy.x,
+                        toy.y
+                    ));
                 }
                 frame.push('\n');
                 frame
@@ -364,22 +375,22 @@ impl ControlResponse {
             Some("PRESENCE") => PresenceStatus::decode(parts).map(Self::Presence),
             Some("SESSION") => SessionStatus::decode(parts).map(Self::Session),
             Some("WAYLAND") => WaylandStatus::decode(parts).map(Self::Wayland),
-            Some("LEAF") => {
+            Some("TOY") => {
                 let id =
                     parse_number(parts.next()).map_err(|_| ProtocolError::MalformedResponse)?;
                 ensure_end(parts)?;
-                Ok(Self::Leaf(id))
+                Ok(Self::Toy(id))
             }
             Some("SNAP") => RemoteSnapshot::decode(parts).map(Self::Snapshot),
-            Some("LEAVES") => {
-                let mut leaves = Vec::new();
+            Some("TOYS") => {
+                let mut toys = Vec::new();
                 for token in parts {
-                    if leaves.len() == MAX_REPORTED_LEAVES {
+                    if toys.len() == MAX_REPORTED_TOYS {
                         return Err(ProtocolError::MalformedResponse);
                     }
-                    leaves.push(LeafPosition::decode(token)?);
+                    toys.push(ToyPosition::decode(token)?);
                 }
-                Ok(Self::Leaves(leaves))
+                Ok(Self::Toys(toys))
             }
             _ => Err(ProtocolError::MalformedResponse),
         }
@@ -584,17 +595,21 @@ impl RemoteSnapshot {
     }
 }
 
-impl LeafPosition {
+impl ToyPosition {
     fn decode(token: &str) -> Result<Self, ProtocolError> {
         let malformed = |_| ProtocolError::MalformedResponse;
-        let (id, point) = token
-            .split_once(':')
-            .ok_or(ProtocolError::MalformedResponse)?;
+        let mut fields = token.splitn(3, ':');
+        let (Some(id), Some(kind), Some(point)) = (fields.next(), fields.next(), fields.next())
+        else {
+            return Err(ProtocolError::MalformedResponse);
+        };
+        let kind = ToyKind::from_code(kind).ok_or(ProtocolError::MalformedResponse)?;
         let (x, y) = point
             .split_once(',')
             .ok_or(ProtocolError::MalformedResponse)?;
         Ok(Self {
             id: parse_number(Some(id)).map_err(malformed)?,
+            kind,
             x: parse_number(Some(x)).map_err(malformed)?,
             y: parse_number(Some(y)).map_err(malformed)?,
         })
@@ -765,10 +780,12 @@ mod tests {
             ControlCommand::Do(PokeAction::Nab),
             ControlCommand::RemoteDo(PokeAction::Meme),
             ControlCommand::WalkTo(-2_560, 1_439),
-            ControlCommand::LeafPlace(0, 0),
-            ControlCommand::LeafMove(u64::MAX, i32::MIN, i32::MAX),
+            ControlCommand::ToyPlace(ToyKind::Ball, 0, 0),
+            ControlCommand::ToyPlace(ToyKind::Stick, -1, 2),
+            ControlCommand::ToyPlace(ToyKind::Crumbs, 3, -4),
+            ControlCommand::ToyMove(u64::MAX, i32::MIN, i32::MAX),
             ControlCommand::Snapshot,
-            ControlCommand::Leaves,
+            ControlCommand::Toys,
         ] {
             assert_eq!(
                 ControlCommand::decode(command.encode().as_bytes()).unwrap(),
@@ -817,8 +834,12 @@ mod tests {
             Err(ProtocolError::UnknownCommand)
         );
         assert_eq!(
-            ControlCommand::decode(b"HONK300/1 LEAF_MOVE -1 2 3\n"),
+            ControlCommand::decode(b"HONK300/1 TOY_MOVE -1 2 3\n"),
             Err(ProtocolError::UnknownCommand)
+        );
+        assert_eq!(
+            ControlCommand::decode(b"HONK300/1 TOY_PLACE X 2 3\n"),
+            Err(ProtocolError::UnknownAction)
         );
         assert_eq!(
             ControlCommand::decode(b"HONK300/1 SNAPSHOT NOW\n"),
@@ -838,10 +859,11 @@ mod tests {
             height: 4_320,
             quiet: true,
         });
-        let leaves = ControlResponse::Leaves(
-            (0..MAX_REPORTED_LEAVES as u64)
-                .map(|id| LeafPosition {
+        let toys = ControlResponse::Toys(
+            (0..MAX_REPORTED_TOYS as u64)
+                .map(|id| ToyPosition {
                     id: 1_000 + id,
+                    kind: ToyKind::Crumbs,
                     x: -10_000,
                     y: 10_000,
                 })
@@ -849,9 +871,9 @@ mod tests {
         );
         for response in [
             snapshot,
-            leaves,
-            ControlResponse::Leaf(42),
-            ControlResponse::Leaves(vec![]),
+            toys,
+            ControlResponse::Toy(42),
+            ControlResponse::Toys(vec![]),
         ] {
             let frame = response.encode();
             assert!(frame.len() <= MAX_FRAME_BYTES, "{frame}");

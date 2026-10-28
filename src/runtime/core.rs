@@ -1,8 +1,8 @@
 use honk_config::{Config, ConfigError, ConfigSnapshot};
 use honk_control::{
-    ControlCommand, ControlResponse, LeafPosition, RemoteSnapshot, MAX_REPORTED_LEAVES,
+    ControlCommand, ControlResponse, RemoteSnapshot, ToyPosition, MAX_REPORTED_TOYS,
 };
-use honk_engine::{Accumulator, AutumnPileId, Clock, PokeOutcome, Rect, Vec2, World};
+use honk_engine::{Accumulator, Clock, PokeOutcome, Rect, ToyId, Vec2, World};
 use std::time::Duration;
 
 const PRESENT_INTERVAL: f64 = 1.0 / 60.0;
@@ -170,16 +170,14 @@ impl RuntimeCore {
         match command {
             ControlCommand::RemoteDo(action) => world.remote_poke(action).into(),
             ControlCommand::WalkTo(x, y) => world.walk_to(point(x, y)).into(),
-            ControlCommand::LeafPlace(x, y) => match world.place_leaves(point(x, y)) {
-                Ok(id) => ControlResponse::Leaf(id.0),
+            ControlCommand::ToyPlace(kind, x, y) => match world.place_toy(kind, point(x, y)) {
+                Ok(id) => ControlResponse::Toy(id.0),
                 Err(outcome) => outcome.into(),
             },
-            ControlCommand::LeafMove(id, x, y) => {
-                match world.move_leaves(AutumnPileId(id), point(x, y)) {
-                    PokeOutcome::Unsupported => ControlResponse::Err("GONE".into()),
-                    outcome => outcome.into(),
-                }
-            }
+            ControlCommand::ToyMove(id, x, y) => match world.move_toy(ToyId(id), point(x, y)) {
+                PokeOutcome::Unsupported => ControlResponse::Err("GONE".into()),
+                outcome => outcome.into(),
+            },
             ControlCommand::Snapshot => {
                 let bounds = world.layout().bounds();
                 let position = world.goose_position();
@@ -194,17 +192,17 @@ impl RuntimeCore {
                     quiet: world.manners_active(),
                 })
             }
-            ControlCommand::Leaves => ControlResponse::Leaves(
+            ControlCommand::Toys => ControlResponse::Toys(
                 world
-                    .autumn()
-                    .piles()
+                    .toys()
+                    .toys()
                     .iter()
-                    .filter(|pile| pile.kicked_at.is_none())
-                    .take(MAX_REPORTED_LEAVES)
-                    .map(|pile| LeafPosition {
-                        id: pile.id.0,
-                        x: pile.position.x.round() as i32,
-                        y: pile.position.y.round() as i32,
+                    .take(MAX_REPORTED_TOYS)
+                    .map(|toy| ToyPosition {
+                        id: toy.id.0,
+                        kind: toy.kind,
+                        x: toy.position.x.round() as i32,
+                        y: toy.position.y.round() as i32,
                     })
                     .collect(),
             ),

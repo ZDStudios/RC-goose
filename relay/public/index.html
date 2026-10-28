@@ -36,6 +36,7 @@
   button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   button.danger { border-color: var(--warn); color: var(--warn); }
   button[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button img { width: 20px; height: 20px; vertical-align: -5px; margin-right: 6px; image-rendering: pixelated; }
   .geese { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
   .goose { text-align: left; padding: 10px 12px; }
   .goose[aria-pressed=true] { background: var(--panel); color: var(--ink); outline: 2px solid var(--accent); }
@@ -101,8 +102,10 @@
           <h2 style="margin:0">Screen</h2>
           <div class="row" role="group" aria-label="Map tool">
             <button type="button" data-tool="walk" aria-pressed="true">Walk here</button>
-            <button type="button" data-tool="leaf" aria-pressed="false">Drop leaves</button>
-            <button type="button" data-tool="move" aria-pressed="false">Move leaves</button>
+            <button type="button" data-tool="ball" aria-pressed="false"><img src="/toys/ball.png" alt="">Ball</button>
+            <button type="button" data-tool="stick" aria-pressed="false"><img src="/toys/stick.png" alt="">Stick</button>
+            <button type="button" data-tool="crumbs" aria-pressed="false"><img src="/toys/crumbs.png" alt="">Crumbs</button>
+            <button type="button" data-tool="move" aria-pressed="false">Move toy</button>
           </div>
         </div>
         <canvas id="map" width="640" height="360" aria-label="Map of the goose's screen"></canvas>
@@ -157,7 +160,7 @@
       else if (m.type === "status") { const g = geese.find((g) => g.name === m.name); if (g) { g.status = m.status; render(); } }
       else if (m.type === "result") {
         const label = pendingLabels.get(m.id) || "command"; pendingLabels.delete(m.id);
-        if (m.ok) log(`${m.target}: ${label} ✓${m.leaf ? ` (leaves #${m.leaf})` : ""}`);
+        if (m.ok) log(`${m.target}: ${label} ✓${m.toy ? ` (toy #${m.toy})` : ""}`);
         else log(`${m.target || "?"}: ${label} — ${explain(m.error)}`, true);
       }
     };
@@ -173,7 +176,7 @@
     return ({
       BUSY: "the goose is busy right now", UNSUPPORTED: "that is turned off on this goose",
       QUIET: "the goose is in quiet mode (fullscreen, do-not-disturb or quiet hours)",
-      GONE: "those leaves are gone", offline: "goose is offline", timeout: "no reply from the goose",
+      GONE: "that toy is gone or in the goose's beak", offline: "goose is offline", timeout: "no reply from the goose",
       rate_limited: "slow down a little", NOT_RUNNING: "the goose is not running",
     })[error] || error || "failed";
   }
@@ -181,7 +184,7 @@
   function send(cmd, extra = {}) {
     if (!selected || !socket || socket.readyState !== WebSocket.OPEN) return;
     const id = `p${nextId++}`;
-    pendingLabels.set(id, cmd.replace(/_/g, " "));
+    pendingLabels.set(id, extra.kind ? `drop ${extra.kind}` : cmd.replace(/_/g, " "));
     socket.send(JSON.stringify({ type: "command", id, target: selected, cmd, ...extra }));
   }
 
@@ -249,6 +252,14 @@
     const fx = (event.clientX - r.left) / r.width, fy = (event.clientY - r.top) / r.height;
     return [Math.round(s.x + fx * s.w), Math.round(s.y + fy * s.h)];
   }
+  // Same art the goose draws on its desktop (Desktop Goose ToysMod / BreadCrumbs mod).
+  const toyArt = {};
+  for (const kind of ["ball", "stick", "crumbs"]) {
+    toyArt[kind] = new Image();
+    toyArt[kind].onload = () => draw();
+    toyArt[kind].src = `/toys/${kind}.png`;
+  }
+
   function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
   function draw() {
@@ -261,14 +272,12 @@
       ctx.fillText(g ? "Waiting for screen size…" : "No goose selected", canvas.width / 2, canvas.height / 2);
       return;
     }
-    for (const leaf of g.status.leaves) {
-      const [x, y] = drag && drag.id === leaf.id ? drag.at : toCanvas(s, leaf.x, leaf.y);
-      ctx.fillStyle = css("--leaf");
-      for (let i = 0; i < 5; i++) {
-        ctx.beginPath();
-        ctx.arc(x + Math.cos(i * 1.3) * 6 * dpr, y + Math.sin(i * 1.3) * 4 * dpr, 4 * dpr, 0, Math.PI * 2);
-        ctx.fill();
-      }
+    ctx.imageSmoothingEnabled = false;
+    for (const toy of g.status.toys || []) {
+      const [x, y] = drag && drag.id === toy.id ? drag.at : toCanvas(s, toy.x, toy.y);
+      const art = toyArt[toy.kind], size = 22 * dpr;
+      if (art && art.complete && art.naturalWidth) ctx.drawImage(art, x - size / 2, y - size / 2, size, size);
+      else { ctx.fillStyle = css("--leaf"); ctx.beginPath(); ctx.arc(x, y, 6 * dpr, 0, Math.PI * 2); ctx.fill(); }
     }
     if (g.status.x != null) {
       const [x, y] = toCanvas(s, g.status.x, g.status.y);
@@ -278,13 +287,13 @@
     }
   }
 
-  function leafAt(s, g, event) {
+  function toyAt(s, g, event) {
     const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
     const px = (event.clientX - r.left) * (canvas.width / r.width), py = (event.clientY - r.top) * (canvas.height / r.height);
     let best = null, bestD = 18 * dpr;
-    for (const leaf of g.status.leaves) {
-      const [x, y] = toCanvas(s, leaf.x, leaf.y); const d = Math.hypot(px - x, py - y);
-      if (d < bestD) { best = leaf; bestD = d; }
+    for (const toy of g.status.toys || []) {
+      const [x, y] = toCanvas(s, toy.x, toy.y); const d = Math.hypot(px - x, py - y);
+      if (d < bestD) { best = toy; bestD = d; }
     }
     return best;
   }
@@ -292,12 +301,13 @@
   canvas.addEventListener("pointerdown", (event) => {
     const g = current(), s = screenOf(g); if (!s) return;
     if (tool === "move") {
-      const leaf = leafAt(s, g, event);
-      if (leaf) { drag = { id: leaf.id, at: toCanvas(s, leaf.x, leaf.y) }; canvas.setPointerCapture(event.pointerId); }
+      const toy = toyAt(s, g, event);
+      if (toy) { drag = { id: toy.id, at: toCanvas(s, toy.x, toy.y) }; canvas.setPointerCapture(event.pointerId); }
       return;
     }
     const [x, y] = toDesktop(s, event);
-    send(tool === "leaf" ? "leaf_place" : "walk_to", { x, y });
+    if (tool === "walk") send("walk_to", { x, y });
+    else send("toy_place", { kind: tool, x, y });
   });
   canvas.addEventListener("pointermove", (event) => {
     if (!drag) return;
@@ -308,13 +318,19 @@
   canvas.addEventListener("pointerup", (event) => {
     if (!drag) return;
     const g = current(), s = screenOf(g), id = drag.id; drag = null;
-    if (s) { const [x, y] = toDesktop(s, event); send("leaf_move", { leaf: id, x, y }); }
+    if (s) { const [x, y] = toDesktop(s, event); send("toy_move", { toy: id, x, y }); }
     draw();
   });
   window.addEventListener("resize", draw);
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
 
-  const hints = { walk: "Click to send the goose there.", leaf: "Click to drop a leaf pile for the goose to kick.", move: "Drag a leaf pile to move it." };
+  const hints = {
+    walk: "Click to send the goose there.",
+    ball: "Click to drop a ball. The goose runs over and kicks it.",
+    stick: "Click to drop a stick. The goose fetches it back to the mouse pointer.",
+    crumbs: "Click to drop bread crumbs. The goose eats them.",
+    move: "Drag a toy to move it (not while the goose is carrying it).",
+  };
   document.querySelectorAll("[data-tool]").forEach((b) => {
     b.onclick = () => {
       tool = b.dataset.tool;

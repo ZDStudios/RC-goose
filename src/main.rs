@@ -256,9 +256,9 @@ fn run_client_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         ControlResponse::Session(_)
         | ControlResponse::Wayland(_)
         | ControlResponse::Presence(_)
-        | ControlResponse::Leaf(_)
+        | ControlResponse::Toy(_)
         | ControlResponse::Snapshot(_)
-        | ControlResponse::Leaves(_) => Err("honk300: unexpected session response.".into()),
+        | ControlResponse::Toys(_) => Err("honk300: unexpected session response.".into()),
     }
 }
 

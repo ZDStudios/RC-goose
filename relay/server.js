@@ -33,11 +33,14 @@ const COMMANDS = new Set([
   "chase_cursor",
   "wander",
   "walk_to",
-  "leaf_place",
-  "leaf_move",
+  "toy_place",
+  "toy_move",
   "walk_off",
 ]);
-const POINT_COMMANDS = new Set(["walk_to", "leaf_place", "leaf_move"]);
+const POINT_COMMANDS = new Set(["walk_to", "toy_place", "toy_move"]);
+const TOY_KINDS = new Set(["ball", "stick", "crumbs"]);
+// Toy art (Desktop Goose ToysMod / BreadCrumbs mod; see THIRD_PARTY_ASSETS.md) for the panel.
+const TOY_IMAGES = new Set(["ball.png", "stick.png", "crumbs.png"]);
 
 function isInt(value) {
   return Number.isSafeInteger(value) && Math.abs(value) <= 1_000_000;
@@ -48,8 +51,9 @@ function validateCommand(message) {
   if (typeof message.cmd !== "string" || !COMMANDS.has(message.cmd)) return "unknown_command";
   if (typeof message.target !== "string" || !NAME_PATTERN.test(message.target)) return "bad_target";
   if (POINT_COMMANDS.has(message.cmd) && !(isInt(message.x) && isInt(message.y))) return "bad_point";
-  if (message.cmd === "leaf_move" && !(Number.isSafeInteger(message.leaf) && message.leaf > 0)) {
-    return "bad_leaf";
+  if (message.cmd === "toy_place" && !TOY_KINDS.has(message.kind)) return "bad_toy";
+  if (message.cmd === "toy_move" && !(Number.isSafeInteger(message.toy) && message.toy > 0)) {
+    return "bad_toy";
   }
   return null;
 }
@@ -74,12 +78,25 @@ function createRelay({ token, publicDir = path.join(__dirname, "public"), log = 
   let nextCommandId = 1;
 
   const indexHtml = fs.readFileSync(path.join(publicDir, "index.html"));
+  const toyImages = new Map(
+    [...TOY_IMAGES].map((name) => [name, fs.readFileSync(path.join(publicDir, "toys", name))]),
+  );
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://relay");
     if (req.method === "GET" && url.pathname === "/healthz") {
       res.writeHead(200, { "content-type": "text/plain" });
       res.end("ok\n");
+      return;
+    }
+    const toyImage = url.pathname.startsWith("/toys/") && toyImages.get(url.pathname.slice(6));
+    if (req.method === "GET" && toyImage) {
+      res.writeHead(200, {
+        "content-type": "image/png",
+        "cache-control": "public, max-age=86400",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(toyImage);
       return;
     }
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
@@ -139,7 +156,7 @@ function createRelay({ token, publicDir = path.join(__dirname, "public"), log = 
     } else if (message.type === "result" && typeof message.id === "string") {
       const result = { ok: message.ok === true };
       if (typeof message.error === "string") result.error = message.error.slice(0, 32);
-      if (Number.isSafeInteger(message.leaf)) result.leaf = message.leaf;
+      if (Number.isSafeInteger(message.toy)) result.toy = message.toy;
       finishCommand(message.id, result);
     }
   }
@@ -164,7 +181,8 @@ function createRelay({ token, publicDir = path.join(__dirname, "public"), log = 
       command.x = message.x;
       command.y = message.y;
     }
-    if (message.cmd === "leaf_move") command.leaf = message.leaf;
+    if (message.cmd === "toy_place") command.kind = message.kind;
+    if (message.cmd === "toy_move") command.toy = message.toy;
     const timer = setTimeout(() => finishCommand(relayId, { ok: false, error: "timeout" }), COMMAND_TIMEOUT_MS);
     pending.set(relayId, { panel: socket, panelId, target: message.target, timer });
     send(goose.socket, command);
@@ -312,7 +330,7 @@ function createRelay({ token, publicDir = path.join(__dirname, "public"), log = 
 function sanitizeStatus(message) {
   const int = (value) => (isInt(value) ? value : null);
   const screen = message.screen && typeof message.screen === "object" ? message.screen : {};
-  const leaves = Array.isArray(message.leaves) ? message.leaves.slice(0, 16) : [];
+  const toys = Array.isArray(message.toys) ? message.toys.slice(0, 16) : [];
   return {
     online: message.online === true,
     action: typeof message.action === "string" ? message.action.slice(0, 32) : "unknown",
@@ -320,9 +338,11 @@ function sanitizeStatus(message) {
     x: int(message.x),
     y: int(message.y),
     screen: { x: int(screen.x), y: int(screen.y), w: int(screen.w), h: int(screen.h) },
-    leaves: leaves
-      .filter((leaf) => leaf && Number.isSafeInteger(leaf.id) && isInt(leaf.x) && isInt(leaf.y))
-      .map((leaf) => ({ id: leaf.id, x: leaf.x, y: leaf.y })),
+    toys: toys
+      .filter(
+        (toy) => toy && Number.isSafeInteger(toy.id) && TOY_KINDS.has(toy.kind) && isInt(toy.x) && isInt(toy.y),
+      )
+      .map((toy) => ({ id: toy.id, kind: toy.kind, x: toy.x, y: toy.y })),
   };
 }
 

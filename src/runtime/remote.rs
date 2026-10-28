@@ -8,7 +8,7 @@
 
 use honk_config::RemoteConfig;
 use honk_control::{ControlCommand, ControlResponse, RemoteIndicator};
-use honk_engine::PokeAction;
+use honk_engine::{PokeAction, ToyKind};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io;
@@ -351,7 +351,9 @@ struct Incoming {
     cmd: Option<String>,
     x: Option<i64>,
     y: Option<i64>,
-    leaf: Option<u64>,
+    toy: Option<u64>,
+    #[serde(rename = "kind")]
+    toy_kind: Option<String>,
     error: Option<String>,
 }
 
@@ -373,13 +375,18 @@ fn command_for(message: &Incoming) -> Result<ControlCommand, &'static str> {
             let (x, y) = point()?;
             ControlCommand::WalkTo(x, y)
         }
-        "leaf_place" => {
+        "toy_place" => {
+            let kind = message
+                .toy_kind
+                .as_deref()
+                .and_then(ToyKind::from_name)
+                .ok_or("BAD_TOY")?;
             let (x, y) = point()?;
-            ControlCommand::LeafPlace(x, y)
+            ControlCommand::ToyPlace(kind, x, y)
         }
-        "leaf_move" => {
+        "toy_move" => {
             let (x, y) = point()?;
-            ControlCommand::LeafMove(message.leaf.ok_or("BAD_LEAF")?, x, y)
+            ControlCommand::ToyMove(message.toy.ok_or("BAD_TOY")?, x, y)
         }
         // The existing graceful walk-off; the force variant is deliberately not reachable.
         "walk_off" => ControlCommand::Stop,
@@ -395,8 +402,8 @@ fn execute(message: &Incoming) -> Value {
     };
     match honk_control::send_command(command) {
         Ok(ControlResponse::Ok) => json!({ "type": "result", "id": id, "ok": true }),
-        Ok(ControlResponse::Leaf(leaf)) => {
-            json!({ "type": "result", "id": id, "ok": true, "leaf": leaf })
+        Ok(ControlResponse::Toy(toy)) => {
+            json!({ "type": "result", "id": id, "ok": true, "toy": toy })
         }
         Ok(ControlResponse::Err(code)) => {
             json!({ "type": "result", "id": id, "ok": false, "error": code })
@@ -412,10 +419,10 @@ fn status_report() -> Value {
     else {
         return json!({ "type": "status", "online": false });
     };
-    let leaves = match honk_control::send_command(ControlCommand::Leaves) {
-        Ok(ControlResponse::Leaves(leaves)) => leaves
+    let toys = match honk_control::send_command(ControlCommand::Toys) {
+        Ok(ControlResponse::Toys(toys)) => toys
             .iter()
-            .map(|leaf| json!({ "id": leaf.id, "x": leaf.x, "y": leaf.y }))
+            .map(|toy| json!({ "id": toy.id, "kind": toy.kind.name(), "x": toy.x, "y": toy.y }))
             .collect(),
         _ => Vec::new(),
     };
@@ -427,7 +434,7 @@ fn status_report() -> Value {
         "y": snapshot.y,
         "quiet": snapshot.quiet,
         "screen": { "x": snapshot.left, "y": snapshot.top, "w": snapshot.width, "h": snapshot.height },
-        "leaves": leaves,
+        "toys": toys,
     })
 }
 
@@ -469,14 +476,15 @@ fn device_name(configured: &str) -> String {
 mod tests {
     use super::*;
 
-    fn incoming(cmd: &str, x: Option<i64>, y: Option<i64>, leaf: Option<u64>) -> Incoming {
+    fn incoming(cmd: &str, x: Option<i64>, y: Option<i64>, toy: Option<u64>) -> Incoming {
         Incoming {
             kind: "command".into(),
             id: Some("r1".into()),
             cmd: Some(cmd.into()),
             x,
             y,
-            leaf,
+            toy,
+            toy_kind: Some("stick".into()),
             error: None,
         }
     }
@@ -500,8 +508,12 @@ mod tests {
             Ok(ControlCommand::WalkTo(-10, 20))
         );
         assert_eq!(
-            command_for(&incoming("leaf_move", Some(1), Some(2), Some(7))),
-            Ok(ControlCommand::LeafMove(7, 1, 2))
+            command_for(&incoming("toy_move", Some(1), Some(2), Some(7))),
+            Ok(ControlCommand::ToyMove(7, 1, 2))
+        );
+        assert_eq!(
+            command_for(&incoming("toy_place", Some(1), Some(2), None)),
+            Ok(ControlCommand::ToyPlace(ToyKind::Stick, 1, 2))
         );
     }
 
@@ -520,9 +532,12 @@ mod tests {
             Err("BAD_POINT")
         );
         assert_eq!(
-            command_for(&incoming("leaf_move", Some(1), Some(2), None)),
-            Err("BAD_LEAF")
+            command_for(&incoming("toy_move", Some(1), Some(2), None)),
+            Err("BAD_TOY")
         );
+        let mut laser = incoming("toy_place", Some(1), Some(2), None);
+        laser.toy_kind = Some("laser".into());
+        assert_eq!(command_for(&laser), Err("BAD_TOY"));
     }
 
     #[test]

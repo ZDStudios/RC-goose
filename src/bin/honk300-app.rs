@@ -220,9 +220,9 @@ fn probe_runtime() -> RuntimeProbe {
             | ControlResponse::Session(_)
             | ControlResponse::Wayland(_)
             | ControlResponse::Presence(_)
-            | ControlResponse::Leaf(_)
+            | ControlResponse::Toy(_)
             | ControlResponse::Snapshot(_)
-            | ControlResponse::Leaves(_),
+            | ControlResponse::Toys(_),
         )
         | Err(_) => RuntimeProbe::Fatal,
     }
